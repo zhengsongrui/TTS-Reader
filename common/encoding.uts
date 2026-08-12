@@ -1,0 +1,21 @@
+// 字节解码与编码检测工具
+import ByteBuffer from 'java.nio.ByteBuffer'
+import Charset from 'java.nio.charset.Charset'
+
+// 字节数组按指定编码解码为字符串
+export function decodeBytes(bytes: ByteArray, encoding: string): string {
+	return Charset.forName(encoding).decode(ByteBuffer.wrap(bytes)).toString()
+}
+
+// 根据文件头 BOM 检测编码；未命中时返回空字符串
+export function detectEncoding(buf: ByteArray, total: Int): string {
+	if (total >= 3) {
+		let b0 = buf[0].toInt() & 0xFF
+		let b1 = buf[1].toInt() & 0xFF
+		let b2 = buf[2].toInt() & 0xFF
+		if (b0 == 0xEF && b1 == 0xBB && b2 == 0xBF) return 'UTF-8'
+		if (b0 == 0xFF && b1 == 0xFE) return 'UTF-16LE'
+		if (b0 == 0xFE && b1 == 0xFF) return 'UTF-16BE'
+	}
+	return ''
+}

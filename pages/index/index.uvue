@@ -1,0 +1,195 @@
+<template>
+	<view class="page">
+		<!-- 空状态 -->
+		<view class="empty" v-if="novels.length == 0">
+			<text class="empty-title">暂无小说</text>
+			<text class="empty-tip">请点击下方按钮导入小说</text>
+		</view>
+
+		<!-- 小说列表 -->
+		<scroll-view class="list" v-else scroll-y="true">
+			<view class="novel-item" v-for="(item, index) in novels" :key="item.id">
+				<view class="novel-info" @click="openReader(item)">
+					<text class="novel-title">{{ item.title }}</text>
+					<text class="novel-author">{{ item.author }}</text>
+				</view>
+				<text class="delete-btn" @click="removeNovel(index)">删除</text>
+			</view>
+		</scroll-view>
+
+		<!-- 底部导入按钮 -->
+		<view class="footer">
+			<button class="import-btn" type="primary" @click="importNovel">导入小说</button>
+		</view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import File from 'java.io.File'
+	import { Novel } from '../../common/models'
+	import { loadBookList, saveBook, deleteBook } from '../../common/db'
+	import { importBook } from '../../common/importer'
+
+	const novels = ref<Novel[]>([])
+
+	// 启动时从 SQLite 读取已导入的小说列表
+	onLoad(() => {
+		novels.value = loadBookList()
+	})
+
+	const startImport = (srcPath: string, fileName: string, fileSize: number) => {
+		uni.showLoading({ title: '正在导入...' })
+		UTSAndroid.getDispatcher('io').async(function(_) {
+			try {
+				// 1. 单次整本流式读取：复制落盘 + 编码检测 + 章节解析
+				let ctx = UTSAndroid.getAppContext()!
+				let booksDir = new File(ctx.getFilesDir().getPath() + '/books')
+				if (!booksDir.exists()) booksDir.mkdirs()
+				let bookId = Date.now()
+				let destPath = booksDir.getPath() + '/' + bookId + '.txt'
+				let result = importBook(srcPath, destPath)
+				let encoding = result.encoding
+				let chapters = result.chapters
+
+				// 2. 标题取文件名（去扩展名）
+				let dot = fileName.lastIndexOf('.')
+				let title = dot > 0 ? fileName.substring(0, dot) : fileName
+
+				// 3. 写 SQLite
+				saveBook(bookId, title, destPath, fileSize, encoding, chapters)
+
+				// 4. 主线程更新列表
+				UTSAndroid.getDispatcher('main').async(function(_) {
+					uni.hideLoading()
+					novels.value.push(new Novel(bookId, title, '', destPath, fileSize, encoding))
+					uni.showToast({ title: '导入成功' })
+				}, null)
+			} catch (e) {
+				console.log(e)
+				UTSAndroid.getDispatcher('main').async(function(_) {
+					uni.hideLoading()
+					uni.showToast({ title: '导入失败' })
+				}, null)
+			}
+		}, null)
+	}
+
+	const importNovel = () => {
+		uni.chooseFile({
+			count: 1,
+			type: 'all',
+			extension: ['txt'],
+			success: (res) => {
+				if (res.tempFiles.length == 0) return
+				startImport(res.tempFiles[0].path, res.tempFiles[0].name, res.tempFiles[0].size)
+			},
+			fail: () => {
+				uni.showToast({ title: '已取消' })
+			}
+		})
+	}
+
+	const openReader = (item: Novel) => {
+		uni.navigateTo({
+			url: '/pages/reader/reader?bookId=' + item.id
+		})
+	}
+
+	const removeNovel = (index: number) => {
+		uni.showModal({
+			title: '删除确认',
+			content: '确定删除《' + novels.value[index].title + '》吗？',
+			success: (res) => {
+				if (res.confirm) {
+					let item = novels.value[index]
+					// 后台线程清理数据库记录与本地文件
+					UTSAndroid.getDispatcher('io').async(function(_) {
+						try {
+							deleteBook(item.id)
+							let f = new File(item.filePath)
+							if (f.exists()) f.delete()
+						} catch (e) {
+							console.error('removeNovel error', e)
+						}
+						UTSAndroid.getDispatcher('main').async(function(_) {
+							novels.value.splice(index, 1)
+						}, null)
+					}, null)
+				}
+			}
+		})
+	}
+</script>
+
+<style lang="scss">
+	.page {
+		flex: 1;
+		background-color: #f8f8f8;
+	}
+
+	.empty {
+		flex: 1;
+		align-items: center;
+		justify-content: center;
+		padding-bottom: 120rpx;
+
+		.empty-title {
+			font-size: 32rpx;
+			color: #999999;
+		}
+
+		.empty-tip {
+			margin-top: 16rpx;
+			font-size: 26rpx;
+			color: #c0c0c0;
+		}
+	}
+
+	.list {
+		flex: 1;
+		padding: 20rpx;
+
+		.novel-item {
+			flex-direction: row;
+			align-items: center;
+			justify-content: space-between;
+			padding: 24rpx;
+			margin-bottom: 20rpx;
+			border-radius: 12rpx;
+			background-color: #ffffff;
+
+			.novel-info {
+				flex: 1;
+
+				.novel-title {
+					font-size: 30rpx;
+					color: #333333;
+				}
+
+				.novel-author {
+					margin-top: 8rpx;
+					font-size: 24rpx;
+					color: #999999;
+				}
+			}
+
+			.delete-btn {
+				padding: 12rpx 24rpx;
+				font-size: 26rpx;
+				color: #ffffff;
+				border-radius: 8rpx;
+				background-color: #dd524d;
+			}
+		}
+	}
+
+	.footer {
+		padding: 20rpx 40rpx;
+		padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+		background-color: #ffffff;
+
+		.import-btn {
+			width: 100%;
+		}
+	}
+</style>

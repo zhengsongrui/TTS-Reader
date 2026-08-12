@@ -1,0 +1,63 @@
+// 数据模型
+
+// 小说信息
+export class Novel {
+	id: number
+	title: string
+	author: string
+	filePath: string
+	fileSize: number
+	encoding: string
+	constructor(id: number, title: string, author: string, filePath: string, fileSize: number, encoding: string) {
+		this.id = id
+		this.title = title
+		this.author = author
+		this.filePath = filePath
+		this.fileSize = fileSize
+		this.encoding = encoding
+	}
+}
+
+// 章节索引（字节偏移）
+export class Chapter {
+	chapterIndex: number = 0
+	title: string = ''
+	startByte: number = 0
+	endByte: number = 0
+	constructor(chapterIndex: number, title: string, startByte: number, endByte: number) {
+		this.chapterIndex = chapterIndex
+		this.title = title
+		this.startByte = startByte
+		this.endByte = endByte
+	}
+}
+
+// 导入结果（编码 + 章节列表）
+export class ImportResult {
+	encoding: string = ''
+	chapters: Chapter[] = []
+	constructor(encoding: string, chapters: Chapter[]) {
+		this.encoding = encoding
+		this.chapters = chapters
+	}
+}
+
+// 书籍基础信息（编码 + 文件路径）
+export class BookInfo {
+	encoding: string = ''
+	filePath: string = ''
+	constructor(encoding: string, filePath: string) {
+		this.encoding = encoding
+		this.filePath = filePath
+	}
+}
+
+// 阅读进度（章节索引 + 章节内句子索引）
+export class ReadingProgress {
+	lastChapterIndex: number = 0
+	lastSentenceIndex: number = 0
+	constructor(lastChapterIndex: number, lastSentenceIndex: number) {
+		this.lastChapterIndex = lastChapterIndex
+		this.lastSentenceIndex = lastSentenceIndex
+	}
+}

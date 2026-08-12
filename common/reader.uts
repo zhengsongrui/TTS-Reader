@@ -1,0 +1,14 @@
+// 章节内容读取
+import RandomAccessFile from 'java.io.RandomAccessFile'
+import { decodeBytes } from './encoding'
+
+// 按字节偏移随机读取单章：seek(startByte) 后只读 endByte - startByte 字节
+export function readChapter(filePath: string, startByte: number, endByte: number, enc: string): string {
+	let raf = new RandomAccessFile(filePath, 'r')
+	raf.seek(startByte.toLong())
+	let len = (endByte - startByte).toInt()
+	let buf = new ByteArray(len)
+	raf.readFully(buf, 0, len)
+	raf.close()
+	return decodeBytes(buf, enc)
+}

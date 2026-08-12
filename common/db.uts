@@ -1,0 +1,134 @@
+// SQLite 数据库操作
+import ContentValues from 'android.content.ContentValues'
+import SQLiteDatabase from 'android.database.sqlite.SQLiteDatabase'
+import { Novel, Chapter, BookInfo, ReadingProgress } from './models'
+
+// 打开数据库并确保表存在
+export function getDb(): SQLiteDatabase {
+	let ctx = UTSAndroid.getAppContext()!
+	let db = ctx.openOrCreateDatabase('novel.db', 0, null)
+	db.execSQL('CREATE TABLE IF NOT EXISTS books (id INTEGER PRIMARY KEY, title TEXT, filePath TEXT, fileSize INTEGER, encoding TEXT)')
+	db.execSQL('CREATE TABLE IF NOT EXISTS chapters (id INTEGER PRIMARY KEY AUTOINCREMENT, bookId INTEGER, chapterIndex INTEGER, title TEXT, startByte INTEGER, endByte INTEGER)')
+	db.execSQL('CREATE TABLE IF NOT EXISTS reading_progress (bookId INTEGER PRIMARY KEY, lastChapterIndex INTEGER, lastSentenceIndex INTEGER)')
+	return db
+}
+
+// 读取已导入的小说列表
+export function loadBookList(): Novel[] {
+	let db = getDb()
+	let bc = db.rawQuery('SELECT id, title, filePath, fileSize, encoding FROM books ORDER BY id', null)
+	let list: Novel[] = []
+	if (bc.moveToFirst()) {
+		do {
+			list.push(new Novel(
+				bc.getLong(bc.getColumnIndex('id')),
+				bc.getString(bc.getColumnIndex('title')),
+				'',
+				bc.getString(bc.getColumnIndex('filePath')),
+				bc.getLong(bc.getColumnIndex('fileSize')),
+				bc.getString(bc.getColumnIndex('encoding'))
+			))
+			bc.moveToNext()
+		} while (!bc.isAfterLast())
+	}
+	bc.close()
+	db.close()
+	return list
+}
+
+// 读取书本的编码与文件路径
+export function getBookInfo(bookId: number): BookInfo {
+	let db = getDb()
+	let bc = db.rawQuery('SELECT encoding, filePath FROM books WHERE id = ' + bookId, null)
+	let encoding = ''
+	let filePath = ''
+	if (bc.moveToFirst()) {
+		encoding = bc.getString(bc.getColumnIndex('encoding'))
+		filePath = bc.getString(bc.getColumnIndex('filePath'))
+	}
+	bc.close()
+	db.close()
+	return new BookInfo(encoding, filePath)
+}
+
+// 读取章节索引列表
+export function loadChapters(bookId: number): Chapter[] {
+	let db = getDb()
+	let cc = db.rawQuery('SELECT chapterIndex, title, startByte, endByte FROM chapters WHERE bookId = ' + bookId + ' ORDER BY chapterIndex', null)
+	let list: Chapter[] = []
+	if (cc.moveToFirst()) {
+		do {
+			list.push(new Chapter(cc.getInt(cc.getColumnIndex('chapterIndex')), cc.getString(cc.getColumnIndex('title')), cc.getLong(cc.getColumnIndex('startByte')), cc.getLong(cc.getColumnIndex('endByte'))))
+			cc.moveToNext()
+		} while (!cc.isAfterLast())
+	}
+	cc.close()
+	db.close()
+	return list
+}
+
+// 保存阅读进度（bookId 为主键，重复保存即覆盖）
+export function saveReadingProgress(bookId: number, lastChapterIndex: number, lastSentenceIndex: number) {
+	let db = getDb()
+	let cv = ContentValues()
+	cv.put('bookId', bookId.toLong())
+	cv.put('lastChapterIndex', lastChapterIndex.toLong())
+	cv.put('lastSentenceIndex', lastSentenceIndex.toLong())
+	db.insertWithOnConflict('reading_progress', null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+	db.close()
+}
+
+// 读取阅读进度，无记录返回 null
+export function getReadingProgress(bookId: number): ReadingProgress | null {
+	let db = getDb()
+	let bc = db.rawQuery('SELECT lastChapterIndex, lastSentenceIndex FROM reading_progress WHERE bookId = ' + bookId, null)
+	let progress: ReadingProgress | null = null
+	if (bc.moveToFirst()) {
+		progress = new ReadingProgress(
+			bc.getInt(bc.getColumnIndex('lastChapterIndex')),
+			bc.getInt(bc.getColumnIndex('lastSentenceIndex'))
+		)
+	}
+	bc.close()
+	db.close()
+	return progress
+}
+
+// 批量写入 SQLite（books + chapters）
+export function saveBook(bookId: number, title: string, filePath: string, fileSize: number, encoding: string, chapters: Chapter[]) {
+	let db = getDb()
+	db.beginTransaction()
+	try {
+		let cv = ContentValues()
+		cv.put('id', bookId.toLong())
+		cv.put('title', title)
+		cv.put('filePath', filePath)
+		cv.put('fileSize', fileSize.toLong())
+		cv.put('encoding', encoding)
+		db.insert('books', null, cv)
+		for (let i = 0; i < chapters.length; i++) {
+			let ccv = ContentValues()
+			ccv.put('bookId', bookId.toLong())
+			ccv.put('chapterIndex', chapters[i].chapterIndex.toLong())
+			ccv.put('title', chapters[i].title)
+			ccv.put('startByte', chapters[i].startByte.toLong())
+			ccv.put('endByte', chapters[i].endByte.toLong())
+			db.insert('chapters', null, ccv)
+		}
+		db.setTransactionSuccessful()
+	} catch (e) {
+		console.error('saveBook error', e)
+	} finally {
+		db.endTransaction()
+	}
+	db.close()
+}
+
+// 删除书本记录及其章节
+export function deleteBook(bookId: number) {
+	let db = getDb()
+	db.execSQL('DELETE FROM chapters WHERE bookId = ' + bookId)
+	db.execSQL('DELETE FROM reading_progress WHERE bookId = ' + bookId)
+	db.execSQL('DELETE FROM books WHERE id = ' + bookId)
+	db.close()
+}

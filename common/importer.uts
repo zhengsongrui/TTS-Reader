@@ -1,0 +1,157 @@
+// 小说导入与章节解析
+import FileInputStream from 'java.io.FileInputStream'
+import FileOutputStream from 'java.io.FileOutputStream'
+import InputStream from 'java.io.InputStream'
+import Uri from 'android.net.Uri'
+import { Chapter, ImportResult } from './models'
+import { decodeBytes, detectEncoding } from './encoding'
+
+// 去除 BOM、全角空格等首尾空白，避免全角缩进导致章节标题识别失败
+function cleanLine(s: string): string {
+	let start = 0
+	let end = s.length
+	while (start < end && (s.charCodeAt(start)! <= 32 || s.charCodeAt(start)! == 0xFEFF || s.charCodeAt(start)! == 0x3000)) start++
+	while (end > start && (s.charCodeAt(end - 1)! <= 32 || s.charCodeAt(end - 1)! == 0xFEFF || s.charCodeAt(end - 1)! == 0x3000)) end--
+	return s.substring(start, end)
+}
+
+// 章节标题正则（逐行增量匹配，兼容非精校版常见格式）
+const chapterReg = new RegExp('^第\\s*[0-9零一二三四五六七八九十百千万两]+\\s*[章卷节回部集]')
+const bracketChapterReg = new RegExp('^[【\\[]第\\s*[0-9零一二三四五六七八九十百千万两]+\\s*[章卷节回部集]')
+const numChapterReg = new RegExp('^[0-9]{1,4}[.、：]')
+const cnNumChapterReg = new RegExp('^[零一二三四五六七八九十百千万两]{1,4}[、.]')
+const engChapterReg = new RegExp('^[Cc]hapter\\s*[0-9]+')
+const engChapterReg2 = new RegExp('^Ch\\.\\s*[0-9]+')
+
+const specialChapters: string[] = ['序章', '楔子', '尾声', '后记', '番外', '前言', '引子', '终章', '大结局', '外传', '上卷', '中卷', '下卷']
+
+function isChapterLine(line: string): boolean {
+	let t = cleanLine(line)
+	if (t.length == 0 || t.length > 40) return false
+	if (chapterReg.test(t)) return true
+	if (bracketChapterReg.test(t)) return true
+	if (numChapterReg.test(t)) return true
+	if (cnNumChapterReg.test(t)) return true
+	if (engChapterReg.test(t)) return true
+	if (engChapterReg2.test(t)) return true
+	return specialChapters.indexOf(t) >= 0
+}
+
+// 单次整本流式读取：边复制落盘，边检测编码、边按行解析章节
+export function importBook(src: string, dest: string): ImportResult {
+	let ctx = UTSAndroid.getAppContext()!
+	let input: InputStream
+	if (src.startsWith('content://') || src.startsWith('content:/')) {
+		input = ctx.getContentResolver().openInputStream(Uri.parse(src))!
+	} else {
+		input = new FileInputStream(src)
+	}
+	let fos = new FileOutputStream(dest)
+
+	const CHUNK: Int = 2 * 1024 * 1024
+	let buf = new ByteArray(CHUNK)
+	let remainSize: Int = 0
+	let fileSize: number = 0
+
+	// 编码检测状态
+	let encoding = 'UTF-8'
+	let detected = false
+
+	// 章节解析状态
+	let chapters: Chapter[] = []
+	let lineStartByte = 0
+	let chapterStart = 0
+	let chapterTitle = ''
+	let hasChapter = false
+
+	while (true) {
+		// 填满本块（InputStream.read 可能短读）
+		let toRead: Int = CHUNK - remainSize
+		let filled: Int = 0
+		while (filled < toRead) {
+			let n = input.read(buf, remainSize + filled, toRead - filled) as Int
+			if (n <= 0) break
+			filled += n
+		}
+		if (filled == 0) break // EOF
+		fileSize += filled
+		fos.write(buf, remainSize, filled)
+		let total: Int = remainSize + filled
+
+		// 编码检测：仅首个块，复用文件头部字节，避免再次打开读取
+		if (!detected) {
+			let enc = detectEncoding(buf, total)
+			if (enc.length > 0) {
+				encoding = enc
+			} else {
+				let sn: Int = total < 2048 ? total : 2048
+				let sample = buf.copyOfRange(0, sn)
+				encoding = decodeBytes(sample, 'UTF-8').indexOf('\uFFFD') >= 0 ? 'GBK' : 'UTF-8'
+			}
+			detected = true
+		}
+
+		// 按行增量解析章节
+		let lineBegin: Int = 0
+		let i: Int = 0
+		while (i < total) {
+			if (buf[i].toInt() == 10) { // \n
+				let lineBytes = buf.copyOfRange(lineBegin, i)
+				let line = decodeBytes(lineBytes, encoding).trim()
+				if (isChapterLine(line)) {
+					if (hasChapter) {
+						chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, lineStartByte))
+					}
+					hasChapter = true
+					// 首章起点固定为 0，保留最前面非标题内容（简介等）
+					if (chapters.length > 0) {
+						chapterStart = lineStartByte
+					}
+					chapterTitle = line
+				}
+				lineStartByte += (i - lineBegin + 1)
+				i++
+				lineBegin = i
+			} else {
+				i++
+			}
+		}
+		// 保留块尾未完成行到 buf 开头，与下一块拼接，正确处理跨块边界
+		let remain: Int = total - lineBegin
+		if (remain > 0) {
+			let tail = buf.copyOfRange(lineBegin, total)
+			for (let k: Int = 0; k < remain; k++) {
+				buf[k] = tail[k]
+			}
+			remainSize = remain
+		} else {
+			remainSize = 0
+		}
+	}
+	input.close()
+	fos.close()
+
+	// 处理最后的未完成行
+	if (remainSize > 0) {
+		let line = decodeBytes(buf.copyOfRange(0, remainSize), encoding).trim()
+		if (isChapterLine(line)) {
+			if (hasChapter) {
+				chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, lineStartByte))
+			}
+			hasChapter = true
+			// 首章起点固定为 0，保留最前面非标题内容（简介等）
+			if (chapters.length > 0) {
+				chapterStart = lineStartByte
+			}
+			chapterTitle = line
+		}
+	}
+	if (hasChapter) {
+		chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, fileSize))
+	}
+	// 未解析出任何章节时退化为整本书单章，避免“未解析到章节”
+	if (chapters.length == 0) {
+		chapters.push(new Chapter(0, '全文', 0, fileSize))
+	}
+	return new ImportResult(encoding, chapters)
+}
