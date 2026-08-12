@@ -1,0 +1,134 @@
+<template>
+	<scroll-view class="content-wrap" scroll-y="true" :scroll-into-view="scrollIntoViewId" @scroll="onScroll">
+		<view class="chapter" v-if="chapters.length > 0">
+			<text class="chapter-title">{{ chapters[currentIndex].title }}</text>
+			<view class="content">
+				<text
+					v-for="(item, index) in content"
+					:key="index"
+					:class="sentenceClassFor(activeSentence, bookmarkKeys, currentIndex + '_' + index)"
+					:id="'c' + currentIndex + '_s' + index"
+					@click="onSentenceClick(currentIndex + '_' + index)">
+					{{ item }}
+				</text>
+			</view>
+		</view>
+		<view class="empty" v-else>
+			<text class="empty-text">未解析到章节</text>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { watch, nextTick, computed } from 'vue'
+	import type { Chapter } from '../../common/models'
+	import { sentenceClass } from '../../common/text'
+
+	const props = defineProps<{
+		chapters: Chapter[]
+		currentIndex: number
+		content: string[]
+		activeSentence: string
+		bookmarkKeys: string[]
+		scrollIntoViewId: string
+	}>()
+
+	const emit = defineEmits<{
+		(e: 'sentenceClick', toSentence: string): void
+		(e: 'scrollTop', idx: number): void
+	}>()
+
+	// 句子相对内容顶部的偏移，用于反推顶部句子
+	let sentenceOffsets: number[] = []
+
+	// 正文渲染后缓存各句子偏移（此时滚动位置为 0）
+	const refreshSentenceTops = () => {
+		uni.createSelectorQuery()
+			.select('.content-wrap').boundingClientRect()
+			.selectAll('.sentence').boundingClientRect()
+			.exec((ret) => {
+				const sw = ret[0] as NodeInfo
+				const sentences = ret[1] as NodeInfo[]
+				sentenceOffsets = sentences.map(s => (s.top ?? 0) - (sw.top ?? 0))
+			})
+	}
+
+	// 句子样式：模板中调用本地包装函数，避免直接引用导入函数
+	const sentenceClassFor = (activeSentence: string, bookmarkKeys: string[], toSentence: string): string =>
+		sentenceClass(activeSentence, bookmarkKeys, toSentence)
+
+	// 内容变化后重测句子偏移
+	const contentKey = computed(() => props.currentIndex + '_' + props.content.length)
+	watch(contentKey, () => {
+		nextTick(() => {
+			refreshSentenceTops()
+		})
+	})
+
+	// 点击句子：抛出事件由页面处理高亮与书签
+	const onSentenceClick = (toSentence: string) => emit('sentenceClick', toSentence)
+
+	// 滚动时反推顶部句子索引并抛出
+	const onScroll = (e: UniScrollEvent) => {
+		const top = e.detail.scrollTop
+		let idx = 0
+		for (let i = sentenceOffsets.length - 1; i >= 0; i--) {
+			const off = sentenceOffsets[i]
+			if (off >= 0 && off <= top) {
+				idx = i
+				break
+			}
+		}
+		emit('scrollTop', idx)
+	}
+</script>
+
+<style lang="scss">
+	.content-wrap {
+		flex: 1;
+
+		.chapter {
+			padding: 32rpx;
+
+			.chapter-title {
+				width: 100%;
+				font-size: 40rpx;
+				font-weight: bold;
+				color: #333333;
+				text-align: center;
+				margin-bottom: 24rpx;
+			}
+
+			.content {
+				width: 100%;
+
+				.sentence {
+					// uvue 不支持 display:inline，直接作为 flex 子项按内容宽度横向排列
+					font-size: 32rpx;
+					line-height: 1.8;
+					color: #333333;
+				}
+
+				.sentence.active {
+					color: #c99a3a;
+					background-color: #f5e8c8;
+				}
+
+				.sentence.bookmarked {
+					text-decoration-line: underline;
+				}
+			}
+		}
+	}
+
+	.empty {
+		flex: 1;
+		align-items: center;
+		justify-content: center;
+
+		.empty-text {
+			font-size: 30rpx;
+			color: #999999;
+		}
+	}
+</style>

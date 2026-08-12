@@ -1,7 +1,7 @@
 // SQLite 数据库操作
 import ContentValues from 'android.content.ContentValues'
 import SQLiteDatabase from 'android.database.sqlite.SQLiteDatabase'
-import { Novel, Chapter, BookInfo, ReadingProgress } from './models'
+import { Novel, Chapter, BookInfo, ReadingProgress, Bookmark } from './models'
 
 // 打开数据库并确保表存在
 export function getDb(): SQLiteDatabase {
@@ -10,6 +10,7 @@ export function getDb(): SQLiteDatabase {
 	db.execSQL('CREATE TABLE IF NOT EXISTS books (id INTEGER PRIMARY KEY, title TEXT, filePath TEXT, fileSize INTEGER, encoding TEXT)')
 	db.execSQL('CREATE TABLE IF NOT EXISTS chapters (id INTEGER PRIMARY KEY AUTOINCREMENT, bookId INTEGER, chapterIndex INTEGER, title TEXT, startByte INTEGER, endByte INTEGER)')
 	db.execSQL('CREATE TABLE IF NOT EXISTS reading_progress (bookId INTEGER PRIMARY KEY, lastChapterIndex INTEGER, lastSentenceIndex INTEGER)')
+	db.execSQL('CREATE TABLE IF NOT EXISTS bookmarks (id INTEGER PRIMARY KEY AUTOINCREMENT, bookId INTEGER, chapterIndex INTEGER, sentenceIndex INTEGER, sentence TEXT)')
 	return db
 }
 
@@ -94,6 +95,51 @@ export function getReadingProgress(bookId: number): ReadingProgress | null {
 	return progress
 }
 
+// 新增书签
+export function addBookmark(bookId: number, chapterIndex: number, sentenceIndex: number, sentence: string) {
+	let db = getDb()
+	let cv = ContentValues()
+	cv.put('bookId', bookId.toLong())
+	cv.put('chapterIndex', chapterIndex.toLong())
+	cv.put('sentenceIndex', sentenceIndex.toLong())
+	cv.put('sentence', sentence)
+	db.insert('bookmarks', null, cv)
+	db.close()
+}
+
+// 删除书签（按 书 + 章节 + 句子 精确定位）
+export function removeBookmark(bookId: number, chapterIndex: number, sentenceIndex: number) {
+	let db = getDb()
+	db.delete('bookmarks', 'bookId = ' + bookId + ' AND chapterIndex = ' + chapterIndex + ' AND sentenceIndex = ' + sentenceIndex, null)
+	db.close()
+}
+
+// 读取该书全部书签
+export function getBookmarks(bookId: number): Bookmark[] {
+	let db = getDb()
+	let bc = db.rawQuery('SELECT chapterIndex, sentenceIndex, sentence FROM bookmarks WHERE bookId = ' + bookId + ' ORDER BY id', null)
+	let list: Bookmark[] = []
+	if (bc.moveToFirst()) {
+		do {
+			list.push(new Bookmark(bc.getInt(bc.getColumnIndex('chapterIndex')), bc.getInt(bc.getColumnIndex('sentenceIndex')), bc.getString(bc.getColumnIndex('sentence'))))
+			bc.moveToNext()
+		} while (!bc.isAfterLast())
+	}
+	bc.close()
+	db.close()
+	return list
+}
+
+// 判断当前句子是否已加书签
+export function isBookmarked(bookId: number, chapterIndex: number, sentenceIndex: number): boolean {
+	let db = getDb()
+	let bc = db.rawQuery('SELECT 1 FROM bookmarks WHERE bookId = ' + bookId + ' AND chapterIndex = ' + chapterIndex + ' AND sentenceIndex = ' + sentenceIndex + ' LIMIT 1', null)
+	let exists = bc.moveToFirst()
+	bc.close()
+	db.close()
+	return exists
+}
+
 // 批量写入 SQLite（books + chapters）
 export function saveBook(bookId: number, title: string, filePath: string, fileSize: number, encoding: string, chapters: Chapter[]) {
 	let db = getDb()
@@ -129,6 +175,7 @@ export function deleteBook(bookId: number) {
 	let db = getDb()
 	db.execSQL('DELETE FROM chapters WHERE bookId = ' + bookId)
 	db.execSQL('DELETE FROM reading_progress WHERE bookId = ' + bookId)
+	db.execSQL('DELETE FROM bookmarks WHERE bookId = ' + bookId)
 	db.execSQL('DELETE FROM books WHERE id = ' + bookId)
 	db.close()
 }

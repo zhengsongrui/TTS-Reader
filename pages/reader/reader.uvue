@@ -1,175 +1,120 @@
 <template>
 	<view class="page">
 		<!-- 章节正文 -->
-		<scroll-view class="content-wrap" scroll-y="true" :scroll-into-view="scrollIntoViewId" @scroll="onScroll">
-			<view class="chapter" v-if="chapters.length > 0">
-				<text class="chapter-title">{{ chapters[currentIndex].title }}</text>
-				<view class="content">
-					<text class="sentence" :id="'c' + currentIndex + '_s' + index" v-for="(item, index) in content">
-						{{ item }}
-					</text>
-				</view>
-			</view>
-			<view class="empty" v-else>
-				<text class="empty-text">未解析到章节</text>
-			</view>
-		</scroll-view>
+		<ReaderContent
+			:chapters="chapters"
+			:currentIndex="currentIndex"
+			:content="content"
+			:activeSentence="activeSentence"
+			:bookmarkKeys="bookmarkKeys"
+			:scrollIntoViewId="scrollIntoViewId"
+			@sentenceClick="onSentenceClick"
+			@scrollTop="handleScrollTop" />
 
 		<!-- 底部翻页 -->
-		<view class="footer" v-if="chapters.length > 0">
-			<button class="nav-btn" :disabled="currentIndex == 0" @click="prevChapter">上一章</button>
-			<text class="page-info">{{ currentIndex + 1 }} / {{ chapters.length }}</text>
-			<button class="nav-btn" :disabled="currentIndex == chapters.length - 1" @click="nextChapter">下一章</button>
-		</view>
+		<ReaderFooter
+			:visible="chapters.length > 0"
+			:currentIndex="currentIndex"
+			:total="chapters.length"
+			@prev="prevChapter"
+			@next="nextChapter" />
+
+		<!-- 底部操作栏（无遮罩） -->
+		<ReaderBottomBar
+			:visible="activeSentence !== ''"
+			:bookmarked="bookmarked"
+			@listen="onListen"
+			@toggleBookmark="toggleBookmark"
+			@more="openSidebar" />
+
+		<!-- 侧边栏 -->
+		<ReaderSidebar
+			:visible="sidebarVisible"
+			:items="sidebarItems"
+			:expanded="sidebarExpanded"
+			:chapters="chapters"
+			:bookmarks="bookmarks"
+			:currentIndex="currentIndex"
+			@close="closeSidebar"
+			@itemClick="onSidebarItemClick"
+			@goChapter="goChapter"
+			@goBookmark="goBookmark" />
 	</view>
 </template>
 
 <script setup lang="uts">
-	import { Chapter } from '../../common/models'
-	import { getBookInfo, loadChapters, saveReadingProgress, getReadingProgress } from '../../common/db'
-	import { readChapter } from '../../common/reader'
+	import { Reader } from '../../composables/useReader'
+	import { BookmarkState } from '../../composables/useBookmark'
+	import { Sidebar } from '../../composables/useSidebar'
+	import type { Bookmark } from '../../common/models'
+	import ReaderContent from '../../components/reader/ReaderContent.uvue'
+	import ReaderFooter from '../../components/reader/ReaderFooter.uvue'
+	import ReaderBottomBar from '../../components/reader/ReaderBottomBar.uvue'
+	import ReaderSidebar from '../../components/reader/ReaderSidebar.uvue'
 
-	const chapters = ref<Chapter[]>([])
-	const currentIndex = ref(0)
-	const content = ref<string[]>([])
-	const encoding = ref('UTF-8')
-	let filePath = ''
-	let bookId = 0
-	// 滚动定位：scroll-into-view 目标 id（'c' + 章节索引 + '_s' + 句子索引）
-	const scrollIntoViewId = ref('')
-	// 各句子相对正文内容顶部的偏移，用于反推顶部句子
-	let sentenceOffsets: number[] = []
-	let lastSentence = 0
-	let saveTimer: number | null = null
+	const reader = new Reader()
+	const bookmark = new BookmarkState()
+	const sidebar = new Sidebar()
 
-	// 按句子切分正文：句号、问号、感叹号后切分（冒号、引号后不切分）
-	// 引号内部的内容不切分，引号前后紧挨的标点也不切分
-	const formatContent = (text: string): string[] => {
-		const result: string[] = []
-		let current = ''
-		let quoteDepth = 0
-		for (let i = 0; i < text.length; i++) {
-			const ch = text.charAt(i)
-			current += ch
-			if (ch == '“' || ch == '‘') {
-				quoteDepth++
-			} else if (ch == '”' || ch == '’') {
-				if (quoteDepth > 0) {
-					quoteDepth--
-				}
-			} else if (ch == '。' || ch == '？' || ch == '！') {
-				if (quoteDepth == 0) {
-					result.push(current)
-					current = ''
-				}
-			}
-		}
-		if (current.length > 0) {
-			result.push(current)
-		}
-		console.log(result)
-		return result
+	// 阅读核心状态
+	const chapters = reader.chapters
+	const currentIndex = reader.currentIndex
+	const content = reader.content
+	const scrollIntoViewId = reader.scrollIntoViewId
+	// 书签状态
+	const activeSentence = bookmark.activeSentence
+	const bookmarked = bookmark.bookmarked
+	const bookmarks = bookmark.bookmarks
+	const bookmarkKeys = bookmark.bookmarkKeys
+	// 侧边栏状态
+	const sidebarVisible = sidebar.visible
+	const sidebarExpanded = sidebar.expanded
+	const sidebarItems = sidebar.items
+
+	// 正文事件
+	const onSentenceClick = (toSentence: string) => bookmark.handleSentenceClick(toSentence)
+	const handleScrollTop = (idx: number) => reader.onScrollTop(idx)
+
+	// 翻页
+	const prevChapter = () => reader.prevChapter()
+	const nextChapter = () => reader.nextChapter()
+
+	// 听书占位（暂不实现）
+	const onListen = () => {
+		uni.showToast({ title: '听书功能暂未开放' })
 	}
 
-	// 正文渲染后缓存各句子相对内容顶部的偏移（此时滚动位置为 0）
-	const refreshSentenceTops = () => {
-		uni.createSelectorQuery()
-			.select('.content-wrap').boundingClientRect()
-			.selectAll('.sentence').boundingClientRect()
-			.exec((ret) => {
-				const sw = ret[0] as NodeInfo
-				const sentences = ret[1] as NodeInfo[]
-				sentenceOffsets = []
-				for (let i = 0; i < sentences.length; i++) {
-					sentenceOffsets.push((sentences[i].top ?? 0) - (sw.top ?? 0))
-				}
-			})
+	// 底部操作栏
+	const toggleBookmark = () => bookmark.toggleBookmark()
+	const openSidebar = () => {
+		bookmark.refresh()
+		bookmark.clearActive()
+		sidebar.open()
 	}
 
-	// 滚动时反推顶部句子索引，并防抖保存进度
-	const onScroll = (e: UniScrollEvent) => {
-		const top = e.detail.scrollTop
-		// 找最后一个偏移 <= 滚动位置的句子作为顶部句子
-		let idx = 0
-		for (let i = 0; i < sentenceOffsets.length; i++) {
-			if (sentenceOffsets[i] <= top) {
-				idx = i
-			} else {
-				break
-			}
-		}
-		lastSentence = idx
-		if (saveTimer == null) {
-			saveTimer = setTimeout(() => {
-				saveTimer = null
-				saveReadingProgress(bookId, currentIndex.value, lastSentence)
-			}, 500)
-		}
+	// 侧边栏
+	const closeSidebar = () => sidebar.close()
+	const onSidebarItemClick = (value: string) => sidebar.onItemClick(value)
+	const goChapter = (idx: number) => {
+		reader.switchChapter(idx)
+		sidebar.close()
 	}
-
-	function loadChapter(index: number, restoreSentence: number = -1): void {
-		if (index < 0 || index >= chapters.value.length) return
-		currentIndex.value = index
-		content.value = []
-		scrollIntoViewId.value = ''
-		// 文件读取与解码放到后台线程，不阻塞 UI
-		UTSAndroid.getDispatcher('io').async(function(_) {
-			try {
-				let ch = chapters.value[index]
-				let text = readChapter(filePath, ch.startByte, ch.endByte, encoding.value)
-				UTSAndroid.getDispatcher('main').async(function(_) {
-					content.value = formatContent(text)
-					// 正文渲染后缓存句子偏移，并按需恢复到上次句子位置
-					nextTick(() => {
-						refreshSentenceTops()
-						if (restoreSentence >= 0 && restoreSentence < content.value.length) {
-							scrollIntoViewId.value = 'c' + currentIndex.value + '_s' + restoreSentence
-						}
-					})
-				}, null)
-			} catch (e) {
-				console.error('read chapter error', e)
-				UTSAndroid.getDispatcher('main').async(function(_) {
-					uni.showToast({ title: '章节读取失败' })
-				}, null)
-			}
-		}, null)
+	const goBookmark = (bm: Bookmark) => {
+		reader.loadChapter(bm.chapterIndex, bm.sentenceIndex)
+		bookmark.highlight(bm.chapterIndex, bm.sentenceIndex)
+		sidebar.close()
 	}
-
-	// 切章并保存新章节（从顶部开始）
-	const switchChapter = (idx: number) => {
-		if (idx < 0 || idx >= chapters.value.length) return
-		loadChapter(idx)
-		saveReadingProgress(bookId, idx, 0)
-	}
-
-	const prevChapter = () => switchChapter(currentIndex.value - 1)
-
-	const nextChapter = () => switchChapter(currentIndex.value + 1)
 
 	onLoad((options) => {
-		bookId = parseInt(options['bookId'] as string)
-		// 直接从 SQLite 读取章节索引（字节偏移），不重新扫描 TXT
-		let info = getBookInfo(bookId)
-		encoding.value = info.encoding
-		filePath = info.filePath
-		chapters.value = loadChapters(bookId)
-		if (chapters.value.length > 0) {
-			// 读取上次阅读位置（章节 + 句子），无效则从第一章顶部开始
-			const progress = getReadingProgress(bookId)
-			if (progress != null && progress.lastChapterIndex < chapters.value.length) {
-				loadChapter(progress.lastChapterIndex, progress.lastSentenceIndex)
-			} else {
-				loadChapter(0)
-			}
-		}
+		const bookId = parseInt(options['bookId'] as string)
+		reader.init(bookId)
+		bookmark.init(bookId, () => content.value)
+		bookmark.loadKeys()
 	})
 
 	// 退出时保存最终阅读位置
 	onUnload(() => {
-		if (chapters.value.length > 0) {
-			saveReadingProgress(bookId, currentIndex.value, lastSentence)
-		}
+		reader.saveProgress()
 	})
 </script>
 
@@ -177,63 +122,5 @@
 	.page {
 		flex: 1;
 		background-color: #faf6ef;
-	}
-
-	.content-wrap {
-		flex: 1;
-
-		.chapter {
-			padding: 32rpx;
-			// 行布局 + 自动换行：句子按内容宽度紧挨排列，放不下才换行
-
-			.chapter-title {
-				width: 100%;
-				font-size: 40rpx;
-				font-weight: bold;
-				color: #333333;
-				text-align: center;
-				margin-bottom: 24rpx;
-			}
-			.content{
-				width: 100%;
-				.sentence {
-				// uvue 不支持 display:inline，直接作为 flex 子项按内容宽度横向排列
-					font-size: 32rpx;
-					line-height: 1.8;
-					color: #333333;
-				}
-			}
-			
-		}
-	}
-
-	.empty {
-		flex: 1;
-		align-items: center;
-		justify-content: center;
-
-		.empty-text {
-			font-size: 30rpx;
-			color: #999999;
-		}
-	}
-
-	.footer {
-		flex-direction: row;
-		align-items: center;
-		justify-content: space-between;
-		padding: 20rpx 40rpx;
-		padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
-		background-color: #ffffff;
-
-		.nav-btn {
-			width: 200rpx;
-			font-size: 28rpx;
-		}
-
-		.page-info {
-			font-size: 26rpx;
-			color: #999999;
-		}
 	}
 </style>

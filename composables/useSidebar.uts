@@ -1,0 +1,32 @@
+// 侧边栏逻辑：开关、展开项、菜单项
+import { ref } from 'vue'
+import { SidebarItem } from '../common/models'
+
+export class Sidebar {
+	// 侧边栏是否可见
+	visible = ref(false)
+	// 展开项：'' | 'catalog' | 'bookmark'
+	expanded = ref('catalog')
+	// 侧边栏菜单项
+	items = ref<SidebarItem[]>([
+		new SidebarItem('目录', 'catalog'),
+		new SidebarItem('书签', 'bookmark'),
+		new SidebarItem('情感推理', 'reasoning'),
+		new SidebarItem('设置', 'setting')
+	])
+
+	// 打开侧边栏：重置展开项 + 置可见
+	open(): void {
+		this.visible.value = true
+	}
+
+	// 关闭侧边栏
+	close(): void {
+		this.visible.value = false
+	}
+
+	// 菜单项点击：切换展开项
+	onItemClick(value: string): void {
+		this.expanded.value = value
+	}
+}

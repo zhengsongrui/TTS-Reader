@@ -1,0 +1,41 @@
+<template>
+	<view class="footer" v-show="visible">
+		<button class="nav-btn" :disabled="currentIndex == 0" @click="emit('prev')">上一章</button>
+		<text class="page-info">{{ currentIndex + 1 }} / {{ total }}</text>
+		<button class="nav-btn" :disabled="currentIndex == total - 1" @click="emit('next')">下一章</button>
+	</view>
+</template>
+
+<script setup lang="uts">
+	const props = defineProps<{
+		visible: boolean
+		currentIndex: number
+		total: number
+	}>()
+
+	const emit = defineEmits<{
+		(e: 'prev'): void
+		(e: 'next'): void
+	}>()
+</script>
+
+<style lang="scss">
+	.footer {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding: 20rpx 40rpx;
+		padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+		background-color: #ffffff;
+
+		.nav-btn {
+			width: 200rpx;
+			font-size: 28rpx;
+		}
+
+		.page-info {
+			font-size: 26rpx;
+			color: #999999;
+		}
+	}
+</style>

@@ -1,0 +1,74 @@
+// 阅读页文本纯函数
+
+// 按句号/问号/感叹号切分句子（引号内不切分）；
+// 换行符左右为中文视为文本错误直接去掉，否则作为切分标记
+export function formatContent(text: string, title: string): string[] {
+	const body = text.replace(title, '')
+	const result: string[] = []
+	let current = ''
+	let quoteDepth = 0
+	// 句首无全角空格占位符时补上
+	const pushSentence = (s: string) => result.push(s.startsWith('　　') ? s : '　　' + s)
+	// 是否为中文字符（CJK 统一表意文字）
+	const isCJK = (c: string): boolean => {
+		if (c.length == 0) return false
+		const code = c.charCodeAt(0) ?? 0
+		return code >= 0x4e00 && code <= 0x9fff
+	}
+	for (let i = 0; i < body.length; i++) {
+		const ch = body.charAt(i)
+		if (ch == '\r' || ch == '\n') {
+			// 连续换行（如 \r\n）视为一个整体
+			let j = i
+			while (j < body.length && (body.charAt(j) == '\r' || body.charAt(j) == '\n')) {
+				j++
+			}
+			const prev = i > 0 ? body.charAt(i - 1) : ''
+			const next = j < body.length ? body.charAt(j) : ''
+			// 左右均为中文：视为文本错误直接去掉，不切分
+			if (isCJK(prev) && isCJK(next)) {
+				i = j - 1
+				continue
+			}
+			// 否则作为切分标记
+			if (current.length > 0) {
+				pushSentence(current)
+				current = ''
+			}
+			i = j - 1
+			continue
+		}
+		current += ch
+		if (ch == '“' || ch == '‘') {
+			quoteDepth++
+		} else if (ch == '”' || ch == '’') {
+			if (quoteDepth > 0) {
+				quoteDepth--
+			}
+		} else if (ch == '。' || ch == '？' || ch == '！') {
+			if (quoteDepth == 0) {
+				pushSentence(current)
+				current = ''
+			}
+		}
+	}
+	if (current.length > 0) {
+		pushSentence(current)
+	}
+	return result
+}
+
+// 解析 '章节_句子' key 为 [章节索引, 句子索引]
+export function parseSentence(key: string): number[] {
+	const idx = key.indexOf('_')
+	return [parseInt(key.substring(0, idx)), parseInt(key.substring(idx + 1))]
+}
+
+// 句子样式：active 高亮 + bookmarked 下划线
+export function sentenceClass(activeSentence: string, bookmarkKeys: string[], toSentence: string): string {
+	let cls = activeSentence == toSentence ? 'sentence active' : 'sentence'
+	if (bookmarkKeys.indexOf(toSentence) >= 0) {
+		cls += ' bookmarked'
+	}
+	return cls
+}

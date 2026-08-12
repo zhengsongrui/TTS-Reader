@@ -1,0 +1,33 @@
+// 听书（语音合成）请求
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
+const BASE_URL_KEY = 'baseUrl'
+
+// 从本地存储读取服务地址，未配置时用默认值
+export function getBaseUrl(): string {
+	let v = uni.getStorageSync(BASE_URL_KEY) as string
+	return v != '' ? v : DEFAULT_BASE_URL
+}
+
+// 听书请求：方式 2（8 维情感向量 [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]）
+export function requestListen(text: string, voice: string, emoVector: number[], format: string = 'mp3', bitrate: number = 64): void {
+	uni.request({
+		url: getBaseUrl() + '/emotion-tts',
+		method: 'POST',
+		header: { 'Content-Type': 'application/json' },
+		data: {
+			text,
+			voice,
+			emotionMode: 2,
+			emoVector,
+			format,
+			bitrate
+		},
+		responseType: 'arraybuffer',
+		success: (res) => {
+			console.log('听书成功', res.data)
+		},
+		fail: (err) => {
+			console.error('听书失败', err)
+		}
+	})
+}

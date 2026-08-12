@@ -61,3 +61,25 @@ export class ReadingProgress {
 		this.lastSentenceIndex = lastSentenceIndex
 	}
 }
+
+// 书签（章节索引 + 句子索引 + 句子文本）
+export class Bookmark {
+	chapterIndex: number = 0
+	sentenceIndex: number = 0
+	sentence: string = ''
+	constructor(chapterIndex: number, sentenceIndex: number, sentence: string) {
+		this.chapterIndex = chapterIndex
+		this.sentenceIndex = sentenceIndex
+		this.sentence = sentence
+	}
+}
+
+// 侧边栏菜单项（标题 + 展开值）
+export class SidebarItem {
+	title: string = ''
+	value: string = ''
+	constructor(title: string, value: string) {
+		this.title = title
+		this.value = value
+	}
+}

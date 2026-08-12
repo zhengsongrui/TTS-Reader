@@ -1,0 +1,189 @@
+<template>
+	<view>
+		<!-- 侧边栏遮罩 -->
+		<view class="mask" v-show="visible" @click="emit('close')"></view>
+
+		<!-- 左侧边栏：目录/书签内联展开，其余占位 -->
+		<view class="sidebar" v-show="visible">
+			<view class="sidebar-title">
+				<view class="sidebar-item" v-for="(item, index) in items" :key="index" @click="emit('itemClick', item.value)">
+					<text class="sidebar-text">{{ item.title }}</text>
+				</view>
+			</view>
+			<view class="sidebar-right">
+				<!-- 目录列表（虚拟列表，仅渲染可视区域） -->
+				<list-view class="sidebar-expand" v-show="expanded == 'catalog'">
+					<list-item class="catalog-item" v-for="(ch, i) in chapters" :key="i" @click="emit('goChapter', i)">
+						<text lines="1" class="expand-text" :class="currentIndex == i ? 'current' : ''">{{ ch.title }}</text>
+					</list-item>
+				</list-view>
+				<!-- 书签列表 -->
+				<scroll-view class="sidebar-expand" scroll-y="true" v-show="expanded == 'bookmark'">
+					<view class="expand-item" v-for="(bm, i) in bookmarks" :key="i" @click="emit('goBookmark', bm)">
+						<text class="expand-text">{{ bm.sentence }}</text>
+					</view>
+					<view class="expand-empty" v-show="bookmarks.length == 0"><text>暂无书签</text></view>
+				</scroll-view>
+				<!-- 设置：语音服务地址 -->
+				<view class="sidebar-expand" v-show="expanded == 'setting'">
+					<view class="expand-item">
+						<text class="expand-text">语音服务地址</text>
+					</view>
+					<view class="setting-row">
+						<input class="setting-input" v-model="baseUrl" placeholder="http://127.0.0.1:8000" @input="saveBaseUrl" />
+					</view>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { watch, computed } from 'vue'
+	import type { SidebarItem, Chapter, Bookmark } from '../../common/models'
+
+	const props = defineProps<{
+		visible: boolean
+		items: SidebarItem[]
+		expanded: string
+		chapters: Chapter[]
+		bookmarks: Bookmark[]
+		currentIndex: number
+	}>()
+
+	const emit = defineEmits<{
+		(e: 'close'): void
+		(e: 'itemClick', value: string): void
+		(e: 'goChapter', index: number): void
+		(e: 'goBookmark', bm: Bookmark): void
+	}>()
+
+	// 语音服务地址（本地存储）
+	const baseUrl = ref('')
+	// UTS 对 watch 的 getter 参数类型推断存在问题，改用 computed 包装后监听
+	const visibleRef = computed(() => props.visible)
+	watch(visibleRef, (v: boolean) => {
+		if (v) {
+			baseUrl.value = uni.getStorageSync('baseUrl') as string
+		}
+	})
+
+	const saveBaseUrl = () => {
+		uni.setStorageSync('baseUrl', baseUrl.value)
+	}
+</script>
+
+<style lang="scss">
+	.mask {
+		position: fixed;
+		left: 0;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(0, 0, 0, 0.4);
+		z-index: 100;
+	}
+
+	.sidebar {
+		position: fixed;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		width: 600rpx;
+		padding-top: 100rpx;
+		background-color: #ffffff;
+		z-index: 101;
+		box-shadow: 4rpx 0 12rpx rgba(0, 0, 0, 0.15);
+		display: flex;
+		flex-direction: row;
+
+		.sidebar-title {
+			width: 160rpx;
+
+			.sidebar-item {
+				padding: 32rpx 40rpx;
+				border-bottom-width: 1rpx;
+				border-bottom-style: solid;
+				border-bottom-color: #f0f0f0;
+
+				.sidebar-text {
+					font-size: 32rpx;
+					color: #333333;
+				}
+			}
+		}
+
+		.sidebar-right {
+			flex: 1;
+			display: flex;
+			flex-direction: column;
+			// 目录/书签展开列表
+			.sidebar-expand {
+				flex: 1;
+				border-top-width: 1rpx;
+				border-top-style: solid;
+				border-top-color: #f0f0f0;
+
+				// 目录项（固定高度，保证虚拟列表复用与滚动正确）
+				.catalog-item {
+					height: 88rpx;
+					flex-direction: row;
+					align-items: center;
+					padding: 0 40rpx;
+					border-bottom-width: 1rpx;
+					border-bottom-style: solid;
+					border-bottom-color: #f5f5f5;
+
+					.expand-text {
+						flex: 1;
+						font-size: 28rpx;
+						color: #333333;
+						text-overflow: ellipsis;
+					}
+
+					.expand-text.current {
+						color: #c99a3a;
+					}
+				}
+
+				.expand-item {
+					padding: 24rpx 40rpx;
+					border-bottom-width: 1rpx;
+					border-bottom-style: solid;
+					border-bottom-color: #f5f5f5;
+
+					.expand-text {
+						font-size: 28rpx;
+						color: #333333;
+					}
+				}
+
+				.expand-empty {
+					align-items: center;
+					justify-content: center;
+					padding: 40rpx;
+
+					text {
+						font-size: 26rpx;
+						color: #999999;
+					}
+				}
+
+				.setting-row {
+					flex-direction: row;
+					align-items: center;
+					padding: 24rpx 40rpx;
+
+					.setting-input {
+						flex: 1;
+						height: 72rpx;
+						padding: 0 20rpx;
+						background-color: #f5f5f5;
+						border-radius: 8rpx;
+						font-size: 26rpx;
+					}
+				}
+			}
+		}
+	}
+</style>

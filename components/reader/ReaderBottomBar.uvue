@@ -1,0 +1,50 @@
+<template>
+	<view class="bottom-bar" v-show="visible">
+		<view class="bar-item" @click="emit('listen')"><text>听书</text></view>
+		<view class="bar-item" @click="emit('toggleBookmark')"><text>{{ bookmarked ? '删除书签' : '添加书签' }}</text></view>
+		<view class="bar-item" @click="emit('more')"><text>更多</text></view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	const props = defineProps<{
+		visible: boolean
+		bookmarked: boolean
+	}>()
+
+	const emit = defineEmits<{
+		(e: 'listen'): void
+		(e: 'toggleBookmark'): void
+		(e: 'more'): void
+	}>()
+</script>
+
+<style lang="scss">
+	// 底部操作栏（无遮罩）
+	.bottom-bar {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 100rpx;
+		flex-direction: row;
+		align-items: center;
+		background-color: #ffffff;
+		border-top-width: 1rpx;
+		border-top-style: solid;
+		border-top-color: #e5e5e5;
+		z-index: 90;
+		padding-bottom: env(safe-area-inset-bottom);
+		border-bottom: 1rpx solid #999;
+		.bar-item {
+			flex: 1;
+			align-items: center;
+			justify-content: center;
+			padding: 16rpx 0;
+
+			text {
+				font-size: 30rpx;
+				color: #333333;
+			}
+		}
+	}
+</style>
