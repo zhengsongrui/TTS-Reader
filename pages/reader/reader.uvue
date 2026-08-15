@@ -8,6 +8,10 @@
 			:activeSentence="activeSentence"
 			:bookmarkKeys="bookmarkKeys"
 			:scrollIntoViewId="scrollIntoViewId"
+			:isListenMode="isListenMode"
+			:sentenceFontSize="sentenceFontSize"
+			:sentenceMargin="sentenceMargin"
+			:chapterBg="chapterBg"
 			@sentenceClick="onSentenceClick"
 			@scrollTop="handleScrollTop" />
 
@@ -21,9 +25,11 @@
 
 		<!-- 底部操作栏（无遮罩） -->
 		<ReaderBottomBar
-			:visible="activeSentence !== ''"
+			:visible="activeSentence !== ''&&!isListenMode"
 			:bookmarked="bookmarked"
-			@listen="onListen"
+			:haveLocalAudio="haveLocalAudio"
+			@listen="checkPlayingStatus"
+			@operateLocalAudio="onOperateLocalAudio"
 			@toggleBookmark="toggleBookmark"
 			@more="openSidebar" />
 
@@ -35,32 +41,79 @@
 			:chapters="chapters"
 			:bookmarks="bookmarks"
 			:currentIndex="currentIndex"
+			:voices="voices"
+			:currentVoiceId="currentVoiceId"
+			:chapterAudioCount="chapterAudioCount"
+			:bookAudioCount="bookAudioCount"
+			:downloading="downloading"
+			:downloadProgress="downloadProgress"
 			@close="closeSidebar"
 			@itemClick="onSidebarItemClick"
 			@goChapter="goChapter"
-			@goBookmark="goBookmark" />
+			@goBookmark="goBookmark"
+			@voiceChange="onVoiceChange"
+			@downloadChapter="onDownloadChapter"
+			@deleteChapterAudio="onDeleteChapterAudio"
+			@deleteBookAudio="onDeleteBookAudio"
+			@fontSizeChange="onFontSizeChange"
+			@sentenceMarginChange="onSentenceMarginChange"
+			@bgColorChange="onBgColorChange" />
+		<!-- <view class="circle go" v-show="isListenMode" @click="checkPlayingStatus">
+			<text class="circle-text">快</text>
+		</view>
+		<view class="circle back" v-show="isListenMode" @click="checkPlayingStatus">
+			<text class="circle-text">慢</text>
+		</view> -->
+		<view class="circle go" v-show="isListenMode" @click="goPlaying">
+			<text class="circle-text">进</text>
+		</view>
+		<view class="circle back" v-show="isListenMode" @click="backPlaying">
+			<text class="circle-text">退</text>
+		</view>
+		<view class="circle stop" v-show="isListenMode" @click="checkPlayingStatus">
+			<text class="circle-text">停</text>
+		</view>
 	</view>
 </template>
 
 <script setup lang="uts">
-	import { Reader } from '../../composables/useReader'
-	import { BookmarkState } from '../../composables/useBookmark'
-	import { Sidebar } from '../../composables/useSidebar'
-	import type { Bookmark } from '../../common/models'
+	import { watch } from 'vue'
+	import { useReader } from './reader.uts'
+	import { useAudioPlayer } from './audio-player.uts'
+	import { useBookmark } from './bookmark.uts'
+	import { useSidebar } from './sidebar.uts'
+	import { parseSentence } from '../../common/text'
+	import { requestVoices, getVoice, setVoice } from '../../common/tts'
+	import { getSentenceFontSize, getSentenceMargin, getChapterBg } from '../../common/reader-setting'
+	import type { Bookmark, Voice } from '../../common/models'
 	import ReaderContent from '../../components/reader/ReaderContent.uvue'
 	import ReaderFooter from '../../components/reader/ReaderFooter.uvue'
 	import ReaderBottomBar from '../../components/reader/ReaderBottomBar.uvue'
 	import ReaderSidebar from '../../components/reader/ReaderSidebar.uvue'
 
-	const reader = new Reader()
-	const bookmark = new BookmarkState()
-	const sidebar = new Sidebar()
+	// 当前书籍 id（onLoad 赋值，驱动书签组合式函数 watchEffect 联动）
+	const bookId = ref(0)
 
-	// 阅读核心状态
+	// 组合式函数：阅读核心 / 听书 / 书签 / 侧边栏
+	const reader = useReader()
+	// 阅读核心状态（供下方组合式函数参数与组件 props 使用）
 	const chapters = reader.chapters
 	const currentIndex = reader.currentIndex
 	const content = reader.content
 	const scrollIntoViewId = reader.scrollIntoViewId
+	const listen = useAudioPlayer(reader)
+	const isListenMode = listen.isListenMode
+	const bookmark = useBookmark({
+		bookId,
+		getContent: () => content.value,
+		playAudio: (sentence: string, onEnded: (nextSentence: string) => void) => listen.play(sentence, onEnded),
+		isListenMode,
+		stopAudio: () => listen.stop(),
+	})
+	// 下载完成待播放时，复用书签组合式函数的播放逻辑（复播当前高亮句 + 续播）
+	listen.onNeedPlay(() => bookmark.handleSentenceClick(bookmark.activeSentence.value))
+	const sidebar = useSidebar()
+	
 	// 书签状态
 	const activeSentence = bookmark.activeSentence
 	const bookmarked = bookmark.bookmarked
@@ -70,25 +123,123 @@
 	const sidebarVisible = sidebar.visible
 	const sidebarExpanded = sidebar.expanded
 	const sidebarItems = sidebar.items
+	// 音色列表（onLoad 加载一次）与当前选中音色
+	const voices = ref<Voice[]>([])
+	const currentVoiceId = ref(getVoice())
+	// 音频管理：本章/本书音频数量、下载中状态与下载进度
+	const chapterAudioCount = ref(0)
+	const bookAudioCount = ref(0)
+	const downloading = ref(false)
+	const downloadProgress = ref('')
+	// 当前高亮句是否已有本地音频（底部操作栏「缓存音频/删除音频」开关）
+	const haveLocalAudio = ref(false)
+	// 阅读设置（初值从本地存储读取，侧边栏修改后通过事件更新，实时应用到正文）
+	const sentenceFontSize = ref(getSentenceFontSize())
+	const sentenceMargin = ref(getSentenceMargin())
+	const chapterBg = ref(getChapterBg())
+
+	// 刷新音频数量（侧边栏打开 / 下载 / 删除后调用）
+	const refreshAudioCounts = () => {
+		chapterAudioCount.value = listen.countChapterAudio(reader.currentIndex.value)
+		bookAudioCount.value = listen.countBookAudio()
+	}
+
+	// 按当前高亮句刷新「是否有本地音频」状态（activeSentence 变化 / 缓存删除完成后调用）
+	const refreshHaveLocalAudio = () => {
+		const key = activeSentence.value
+		haveLocalAudio.value = key != '' && listen.hasFile(key)
+	}
+
+	// 高亮句变化时同步本地音频状态（清空 / 点击切换 / 听书切句）
+	watch(activeSentence, () => refreshHaveLocalAudio())
+
+	// 下载本章音频：串行下载，进度按（done/total）实时回显
+	const onDownloadChapter = () => {
+		if (downloading.value) return
+		downloading.value = true
+		downloadProgress.value = ''
+		listen.downloadChapter((done: number, total: number) => {
+			downloadProgress.value = done + '/' + total
+		}, () => {
+			downloading.value = false
+			downloadProgress.value = ''
+			refreshAudioCounts()
+			uni.showToast({ title: '本章音频下载完成' })
+		})
+	}
+
+	// 删除本章音频：二次确认后停止播放并删除，随后刷新数量
+	const onDeleteChapterAudio = () => {
+		uni.showModal({
+			title: '删除本章音频',
+			content: '确定删除本章 ' + chapterAudioCount.value + ' 个音频文件？',
+			success: (res) => {
+				if (res.confirm) {
+					listen.stop()
+					listen.deleteChapterAudio(reader.currentIndex.value)
+					refreshAudioCounts()
+				}
+			}
+		})
+	}
+
+	// 删除本书音频：二次确认后停止播放并删除，随后刷新数量
+	const onDeleteBookAudio = () => {
+		uni.showModal({
+			title: '删除本书音频',
+			content: '确定删除本书 ' + bookAudioCount.value + ' 个音频文件？',
+			success: (res) => {
+				if (res.confirm) {
+					listen.stop()
+					listen.deleteBookAudio()
+					refreshAudioCounts()
+				}
+			}
+		})
+	}
 
 	// 正文事件
-	const onSentenceClick = (toSentence: string) => bookmark.handleSentenceClick(toSentence)
+	const onSentenceClick = (sentence: string) => bookmark.handleSentenceClick(sentence)
 	const handleScrollTop = (idx: number) => reader.onScrollTop(idx)
 
 	// 翻页
 	const prevChapter = () => reader.prevChapter()
 	const nextChapter = () => reader.nextChapter()
 
-	// 听书占位（暂不实现）
-	const onListen = () => {
-		uni.showToast({ title: '听书功能暂未开放' })
-	}
+	
 
 	// 底部操作栏
+	const checkPlayingStatus = () => bookmark.checkPlayingStatus()
+	// 当前播放音频 前进5秒
+	const goPlaying = () => listen.seek(5)
+	// 当前播放音频 后退5秒
+	const backPlaying = () => listen.seek(-5)
 	const toggleBookmark = () => bookmark.toggleBookmark()
+
+	// 操作本地音频：已有则删除，否则下载缓存当前高亮句，完成后刷新本地音频状态
+	const onOperateLocalAudio = () => {
+		const key = activeSentence.value
+		if (key == '') return
+		if (haveLocalAudio.value) {
+			if (listen.deleteSentenceAudio(key)) {
+				refreshHaveLocalAudio()
+				uni.showToast({ title: '已删除音频' })
+			} else {
+				uni.showToast({ title: '删除失败' })
+			}
+		} else {
+			listen.cacheSentence(key, () => {
+				refreshHaveLocalAudio()
+				uni.showToast({ title: '已缓存音频' })
+			}, () => {
+				uni.showToast({ title: '缓存失败' })
+			})
+		}
+	}
 	const openSidebar = () => {
 		bookmark.refresh()
 		bookmark.clearActive()
+		refreshAudioCounts()
 		sidebar.open()
 	}
 
@@ -105,16 +256,54 @@
 		sidebar.close()
 	}
 
-	onLoad((options) => {
-		const bookId = parseInt(options['bookId'] as string)
-		reader.init(bookId)
-		bookmark.init(bookId, () => content.value)
-		bookmark.loadKeys()
+	// 音色选择：持久化所选音色并更新当前显示
+	const onVoiceChange = (id: string) => {
+		currentVoiceId.value = id
+		setVoice(id)
+	}
+
+	// 阅读设置：更新响应式状态，ReaderContent 据此实时应用
+	const onFontSizeChange = (v: number) => { sentenceFontSize.value = v }
+	const onSentenceMarginChange = (v: number) => { sentenceMargin.value = v }
+	const onBgColorChange = (color: string) => { chapterBg.value = color }
+
+	// 听书模式跨章自动翻页：从当前章最后一句变为下一章第一句时，翻页到下一章
+	watch(activeSentence, (newVal: string, oldVal: string) => {
+		if (!isListenMode.value || oldVal == '' || newVal == '') return
+		const oldParts = parseSentence(oldVal)
+		const newParts = parseSentence(newVal)
+		if (newParts[0] == oldParts[0] + 1 && newParts[1] == 0) {
+			nextChapter()
+		}
 	})
 
-	// 退出时保存最终阅读位置
+	// 听书模式跟随高亮句滚动：props 只读，滚动目标统一由父组件 ref 驱动
+	watch(activeSentence, () => {
+		if (!isListenMode.value) return
+		scrollIntoViewId.value = ''
+		setTimeout(() => {
+			let arr = activeSentence.value.split('_')
+			if (arr.length > 0) {
+				scrollIntoViewId.value = 'c' + arr[0] + '_s' + arr[1]
+			}
+		}, 50)
+	})
+
+	onLoad((options) => {
+		bookId.value = parseInt(options['bookId'] as string)
+		reader.init(bookId.value)
+		// 加载音色列表（失败仅提示，不影响阅读）
+		requestVoices((list: Voice[]) => {
+			voices.value = list
+		}, () => {
+			uni.showToast({ title: '音色列表加载失败' })
+		})
+	})
+
+	// 退出时保存最终阅读位置并释放听书音频
 	onUnload(() => {
 		reader.saveProgress()
+		listen.dispose()
 	})
 </script>
 
@@ -122,5 +311,29 @@
 	.page {
 		flex: 1;
 		background-color: #faf6ef;
+	}
+	.circle{
+		position: fixed;
+		right: 16rpx;
+		width: 80rpx;
+		height: 80rpx;
+		border-radius: 50%;
+		background-color: #666;
+		&.go{
+			bottom: 400rpx;
+		}
+		&.back{
+			bottom: 300rpx;
+		}
+		&.stop{
+			bottom: 200rpx;
+		}
+		.circle-text{
+			color: #fff;
+			font-weight: 700;
+			font-size: 60rpx;
+			line-height: 80rpx;
+			text-align: center;;
+		}
 	}
 </style>

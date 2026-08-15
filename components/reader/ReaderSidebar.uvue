@@ -1,18 +1,18 @@
 <template>
 	<view>
 		<!-- 侧边栏遮罩 -->
-		<view class="mask" v-show="visible" @click="emit('close')"></view>
+		<view class="mask" :class="visible ? 'show' : ''" @click="emit('close')"></view>
 
 		<!-- 左侧边栏：目录/书签内联展开，其余占位 -->
-		<view class="sidebar" v-show="visible">
+		<view class="sidebar" :class="visible ? 'show' : ''">
 			<view class="sidebar-title">
-				<view class="sidebar-item" v-for="(item, index) in items" :key="index" @click="emit('itemClick', item.value)">
+				<view class="sidebar-item" :class="item.value== expanded ? 'active':''" v-for="(item, index) in items" :key="index" @click="emit('itemClick', item.value)">
 					<text class="sidebar-text">{{ item.title }}</text>
 				</view>
 			</view>
 			<view class="sidebar-right">
 				<!-- 目录列表（虚拟列表，仅渲染可视区域） -->
-				<list-view class="sidebar-expand" v-show="expanded == 'catalog'">
+				<list-view class="sidebar-expand" v-show="expanded == 'catalog'" :scroll-top="scrollTop">
 					<list-item class="catalog-item" v-for="(ch, i) in chapters" :key="i" @click="emit('goChapter', i)">
 						<text lines="1" class="expand-text" :class="currentIndex == i ? 'current' : ''">{{ ch.title }}</text>
 					</list-item>
@@ -24,15 +24,112 @@
 					</view>
 					<view class="expand-empty" v-show="bookmarks.length == 0"><text>暂无书签</text></view>
 				</scroll-view>
-				<!-- 设置：语音服务地址 -->
-				<view class="sidebar-expand" v-show="expanded == 'setting'">
-					<view class="expand-item">
-						<text class="expand-text">语音服务地址</text>
+				<!-- 音频管理 -->
+				<scroll-view class="sidebar-expand" scroll-y="true" v-show="expanded == 'audioManage'">
+					<view class="expand-item audio-btn" :class="downloading ? 'disabled' : ''" @click="onDownloadClick">
+						<text class="expand-text">下载本章音频</text>
 					</view>
-					<view class="setting-row">
-						<input class="setting-input" v-model="baseUrl" placeholder="http://127.0.0.1:8000" @input="saveBaseUrl" />
+					<view class="audio-progress" v-show="downloading">
+						<text>下载进度（{{ downloadProgress }}）</text>
 					</view>
-				</view>
+					<view class="expand-item audio-btn" @click="emit('deleteChapterAudio')">
+						<text class="expand-text">删除本章音频（{{ chapterAudioCount }}）</text>
+					</view>
+					<view class="expand-item audio-btn" @click="emit('deleteBookAudio')">
+						<text class="expand-text">删除本书音频（{{ bookAudioCount }}）</text>
+					</view>
+				</scroll-view>
+				<!-- 设置：语音服务地址 + 音色 + 语气控制 -->
+				<scroll-view class="sidebar-expand" scroll-y="true" v-show="expanded == 'listenSetting'">
+					<view class="setting-item">
+						<text class="setting-title">语音服务地址</text>
+						<view class="setting-row">
+							<input class="setting-input" v-model="baseUrl" placeholder="http://127.0.0.1:8000" @input="saveBaseUrl" />
+						</view>
+					</view>
+					<view class="setting-item">
+						<text class="setting-title">音色</text>
+						<view class="setting-row">
+							<picker mode="selector" :range="voiceNames" :value="currentVoiceIndex < 0 ? 0 : currentVoiceIndex" @change="onVoiceChange">
+								<view class="setting-input setting-picker">
+									<text>{{ currentVoiceName }}</text>
+								</view>
+							</picker>
+						</view>
+					</view>
+					<!-- 语气控制：模式1 语气音频 / 模式2 情感向量 + 语气浓度 -->
+					<view class="setting-item">
+						<text class="setting-title">语气控制</text>
+						<view class="setting-row">
+							<view class="mode-list">
+								<view 
+									class="mode-list-item" 
+									:class="emotionMode == item.value?'active':''" 
+									v-for="(item,index) in modeNames" 
+									:key="index" 
+									@click="onModeChange(item.value)"
+								>
+									<text>{{item.name}}</text>
+								</view>
+							</view>
+							
+						</view>
+						<!-- 模式1：语气音频（复用音色列表） -->
+						<view class="setting-row" v-show="emotionMode == 1">
+							<picker mode="selector" :range="voiceNames" :value="emoAudioIndex < 0 ? 0 : emoAudioIndex" @change="onEmoAudioChange">
+								<view class="setting-input setting-picker">
+									<text>{{ emoAudioName }}</text>
+								</view>
+							</picker>
+						</view>
+						<!-- 模式2：8维情感向量滑块（0-100） -->
+						<view v-show="emotionMode == 2">
+							<view class="emo-row" v-for="(label, i) in emoLabels" :key="i">
+								<text class="emo-label">{{ label }}</text>
+								<slider class="emo-slider" :min="0" :max="100" :value="Math.round(emoVector[i] * 100)" @change="onEmoVectorChange(i, $event)" />
+								<text class="emo-value">{{ Math.round(emoVector[i] * 100) }}%</text>
+							</view>
+						</view>
+						<!-- 语气浓度（0-100，发送时除以100） -->
+						<view class="emo-row">
+							<text class="emo-label">语气浓度</text>
+							<slider class="emo-slider" :min="0" :max="100" :value="Math.round(emoAlpha * 100)" @change="onEmoAlphaChange" />
+							<text class="emo-value">{{ Math.round(emoAlpha * 100) }}%</text>
+						</view>
+					</view>
+				</scroll-view>
+				<!-- 阅读设置：正文字号 + 句间距 + 章节背景色 -->
+				<scroll-view class="sidebar-expand" scroll-y="true" v-show="expanded == 'readSetting'">
+					<view class="setting-item">
+						<text class="setting-title">正文字号</text>
+						<view class="setting-row emo-row">
+							<slider class="emo-slider" :min="20" :max="44" :value="sentenceFontSize" @change="onFontSizeChange" />
+							<text class="emo-value">{{ sentenceFontSize }}</text>
+						</view>
+					</view>
+					<view class="setting-item">
+						<text class="setting-title">句间距</text>
+						<view class="setting-row emo-row">
+							<slider class="emo-slider" :min="0" :max="32" :value="sentenceMargin" @change="onSentenceMarginChange" />
+							<text class="emo-value">{{ sentenceMargin }}</text>
+						</view>
+					</view>
+					<view class="setting-item">
+						<text class="setting-title">章节背景</text>
+						<view class="setting-row">
+							<view class="color-row">
+								<view
+									class="color-block"
+									:class="chapterBg == item ? 'active' : ''"
+									v-for="(item, index) in bgColors"
+									:key="index"
+									:style="colorStyle(item)"
+									@click="onBgColorChange(item)">
+								</view>
+							</view>
+						</view>
+					</view>
+				</scroll-view>
 			</view>
 		</view>
 	</view>
@@ -40,7 +137,9 @@
 
 <script setup lang="uts">
 	import { watch, computed } from 'vue'
-	import type { SidebarItem, Chapter, Bookmark } from '../../common/models'
+	import type { SidebarItem, Chapter, Bookmark, Voice } from '../../common/models'
+	import { getEmotionMode, setEmotionMode, getEmoAudioPrompt, setEmoAudioPrompt, getEmoVector, setEmoVector, getEmoAlpha, setEmoAlpha } from '../../common/tts'
+	import { getSentenceFontSize, setSentenceFontSize, getSentenceMargin, setSentenceMargin, getChapterBg, setChapterBg, CHAPTER_BG_COLORS } from '../../common/reader-setting'
 
 	const props = defineProps<{
 		visible: boolean
@@ -49,6 +148,12 @@
 		chapters: Chapter[]
 		bookmarks: Bookmark[]
 		currentIndex: number
+		voices: Voice[]
+		currentVoiceId: string
+		chapterAudioCount: number
+		bookAudioCount: number
+		downloading: boolean
+		downloadProgress: string
 	}>()
 
 	const emit = defineEmits<{
@@ -56,20 +161,190 @@
 		(e: 'itemClick', value: string): void
 		(e: 'goChapter', index: number): void
 		(e: 'goBookmark', bm: Bookmark): void
+		(e: 'voiceChange', id: string): void
+		(e: 'downloadChapter'): void
+		(e: 'deleteChapterAudio'): void
+		(e: 'deleteBookAudio'): void
+		(e: 'fontSizeChange', value: number): void
+		(e: 'sentenceMarginChange', value: number): void
+		(e: 'bgColorChange', color: string): void
 	}>()
 
 	// 语音服务地址（本地存储）
-	const baseUrl = ref('')
+	const baseUrl = ref('http://127.0.0.1:8000')
+	// 语气控制状态：直接在组件内读写本地存储（初值从存储读取）
+	const emotionMode = ref(getEmotionMode())
+	const emoAudioPrompt = ref(getEmoAudioPrompt())
+	const emoVector = ref<number[]>(getEmoVector())
+	const emoAlpha = ref(getEmoAlpha())
+	// 阅读设置状态：直接在组件内读写本地存储（初值从存储读取）
+	const sentenceFontSize = ref(getSentenceFontSize())
+	const sentenceMargin = ref(getSentenceMargin())
+	const chapterBg = ref(getChapterBg())
+	// 章节背景预设色板
+	const bgColors = CHAPTER_BG_COLORS
+	// 目录项固定高度（rpx，与样式保持一致）
+	const catalogItemHeight = 42.25
+	// 目录滚动位置：打开侧边栏时将当前章节定位到列表顶部
+	const scrollTop = ref(0)
 	// UTS 对 watch 的 getter 参数类型推断存在问题，改用 computed 包装后监听
 	const visibleRef = computed(() => props.visible)
 	watch(visibleRef, (v: boolean) => {
 		if (v) {
 			baseUrl.value = uni.getStorageSync('baseUrl') as string
+			// 打开侧边栏时刷新阅读设置（保持与本地存储同步）
+			sentenceFontSize.value = getSentenceFontSize()
+			sentenceMargin.value = getSentenceMargin()
+			chapterBg.value = getChapterBg()
+			// 延迟到 sidebar 完全显示、list-view 激活后再定位
+			setTimeout(() => {
+				scrollTop.value = props.currentIndex * catalogItemHeight
+			}, 0)
+		} else {
+			// 关闭时复位，保证再次打开能重新触发滚动
+			scrollTop.value = 0
+		}
+	})
+
+	// 切换到目录时也定位到当前章节（侧边栏已打开、仅切换展开项时触发）
+	const expandedRef = computed(() => props.expanded)
+	watch(expandedRef, (v: string) => {
+		if (v == 'catalog' && props.visible) {
+			// v-show 重新显示的 list-view 需 scroll-top 值变化才触发定位：先复位再定位
+			scrollTop.value = 0
+			setTimeout(() => {
+				scrollTop.value = props.currentIndex * catalogItemHeight
+			}, 0)
 		}
 	})
 
 	const saveBaseUrl = () => {
 		uni.setStorageSync('baseUrl', baseUrl.value)
+	}
+
+	// 音色名称列表（picker 下拉选项）
+	const voiceNames = computed<string[]>(() => {
+		const names: string[] = []
+		for (let i = 0; i < props.voices.length; i++) {
+			names.push(props.voices[i].name)
+		}
+		return names
+	})
+	// 当前选中音色在列表中的索引（未找到为 -1）
+	const currentVoiceIndex = computed<number>(() => {
+		for (let i = 0; i < props.voices.length; i++) {
+			if (props.voices[i].id == props.currentVoiceId) return i
+		}
+		return -1
+	})
+	// 当前选中音色名称（列表未加载/未匹配时显示 id 占位）
+	const currentVoiceName = computed<string>(() => {
+		for (let i = 0; i < props.voices.length; i++) {
+			if (props.voices[i].id == props.currentVoiceId) return props.voices[i].name
+		}
+		return props.currentVoiceId == '' ? '请选择音色' : props.currentVoiceId
+	})
+	// 音色选择：把所选音色 id 上抛页面层持久化
+	const onVoiceChange = (e: UniPickerChangeEvent) => {
+		const idx = e.detail.value as number
+		if (idx >= 0 && idx < props.voices.length) {
+			emit('voiceChange', props.voices[idx].id)
+		}
+	}
+
+	// 下载本章音频：下载中禁用，避免重复触发
+	const onDownloadClick = () => {
+		if (!props.downloading) {
+			emit('downloadChapter')
+		}
+	}
+
+	// 语气控制：模式名称与 8 维情感标签（happy, angry, sad, afraid, disgusted, melancholic, surprised, calm）
+	// UTS 对象字面量按构造函数参数名匹配，故提供构造函数并用 new 创建
+	class ModeOption {
+		name: string = ''
+		value: number = 0
+		constructor(name: string, value: number) {
+			this.name = name
+			this.value = value
+		}
+	}
+	const modeNames: ModeOption[] = [
+		new ModeOption('模式1:语气', 1),
+		new ModeOption('模式2:向量', 2)
+	]
+	const emoLabels = ['开心', '生气', '悲伤', '害怕', '厌恶', '忧郁', '惊讶', '平静']
+
+	// 语气模式切换：更新响应式状态并写入本地存储
+	const onModeChange = (value : number) => {
+		emotionMode.value = value
+		setEmotionMode(value)
+	}
+
+	// 模式1：当前语气音频在音色列表中的索引与显示名
+	const emoAudioIndex = computed<number>(() => {
+		for (let i = 0; i < props.voices.length; i++) {
+			if (props.voices[i].id == emoAudioPrompt.value) return i
+		}
+		return -1
+	})
+	const emoAudioName = computed<string>(() => {
+		for (let i = 0; i < props.voices.length; i++) {
+			if (props.voices[i].id == emoAudioPrompt.value) return props.voices[i].name
+		}
+		return emoAudioPrompt.value == '' ? '请选择语气音频' : emoAudioPrompt.value
+	})
+	// 模式1：选择语气音频（取音色 id），更新响应式状态并写入本地存储
+	const onEmoAudioChange = (e: UniPickerChangeEvent) => {
+		const idx = e.detail.value as number
+		if (idx >= 0 && idx < props.voices.length) {
+			emoAudioPrompt.value = props.voices[idx].id
+			setEmoAudioPrompt(emoAudioPrompt.value)
+		}
+	}
+
+	// 模式2：更新第 i 维情感值（UI 0-100，存储 0-1），并写入本地存储
+	// 模板内联调用 (i, $event) 时 $event 为 Any，需先强转为具体事件类型再取 detail
+	const onEmoVectorChange = (i: number, e: any) => {
+		const ev = e as UniSliderChangeEvent
+		const arr = emoVector.value.slice()
+		arr[i] = (ev.detail.value as number) / 100
+		emoVector.value = arr
+		setEmoVector(arr)
+	}
+
+	// 语气浓度：UI 0-100，存储 0-1，并写入本地存储
+	const onEmoAlphaChange = (e: UniSliderChangeEvent) => {
+		emoAlpha.value = (e.detail.value as number) / 100
+		setEmoAlpha(emoAlpha.value)
+	}
+
+	// 正文字号：更新本地存储并上抛页面应用到正文
+	const onFontSizeChange = (e: UniSliderChangeEvent) => {
+		sentenceFontSize.value = e.detail.value as number
+		setSentenceFontSize(sentenceFontSize.value)
+		emit('fontSizeChange', sentenceFontSize.value)
+	}
+
+	// 句间距：更新本地存储并上抛页面应用到正文
+	const onSentenceMarginChange = (e: UniSliderChangeEvent) => {
+		sentenceMargin.value = e.detail.value as number
+		setSentenceMargin(sentenceMargin.value)
+		emit('sentenceMarginChange', sentenceMargin.value)
+	}
+
+	// 章节背景色：更新本地存储并上抛页面应用到正文
+	const onBgColorChange = (color: string) => {
+		chapterBg.value = color
+		setChapterBg(color)
+		emit('bgColorChange', color)
+	}
+
+	// 色块动态背景色（uvue :style 绑定 Map<string,string>）
+	const colorStyle = (color: string): Map<string, string> => {
+		const m = new Map<string, string>()
+		m.set('background-color', color)
+		return m
 	}
 </script>
 
@@ -82,6 +357,14 @@
 		bottom: 0;
 		background-color: rgba(0, 0, 0, 0.4);
 		z-index: 100;
+		// 非 display:none 的视觉隐藏：组件常驻渲染、实时响应 props 更新，避免重建卡顿
+		opacity: 0;
+		pointer-events: none;
+
+		&.show {
+			opacity: 1;
+			pointer-events: auto;
+		}
 	}
 
 	.sidebar {
@@ -90,23 +373,32 @@
 		top: 0;
 		bottom: 0;
 		width: 600rpx;
-		padding-top: 100rpx;
 		background-color: #ffffff;
 		z-index: 101;
 		box-shadow: 4rpx 0 12rpx rgba(0, 0, 0, 0.15);
 		display: flex;
 		flex-direction: row;
+		// 非 display:none 的视觉隐藏：移出屏幕外，组件常驻渲染、实时响应 props 更新
+		transform: translateX(-100%);
+		pointer-events: none;
+
+		&.show {
+			transform: translateX(0);
+			pointer-events: auto;
+		}
 
 		.sidebar-title {
-			width: 160rpx;
+			width: 120rpx;
+			border-right: 1px solid #f0f0f0;;
 
 			.sidebar-item {
-				padding: 32rpx 40rpx;
-				border-bottom-width: 1rpx;
-				border-bottom-style: solid;
-				border-bottom-color: #f0f0f0;
-
+				padding: 40rpx 20rpx;
+				border: 1rpx solid #f0f0f0;
+				&.active{
+					background-color: #f1be56;
+				}
 				.sidebar-text {
+					text-align: center;
 					font-size: 32rpx;
 					color: #333333;
 				}
@@ -130,12 +422,11 @@
 					flex-direction: row;
 					align-items: center;
 					padding: 0 40rpx;
-					border-bottom-width: 1rpx;
-					border-bottom-style: solid;
-					border-bottom-color: #f5f5f5;
+					border: 1rpx solid #f5f5f5;
 
 					.expand-text {
 						flex: 1;
+						line-height: 88rpx;
 						font-size: 28rpx;
 						color: #333333;
 						text-overflow: ellipsis;
@@ -148,9 +439,7 @@
 
 				.expand-item {
 					padding: 24rpx 40rpx;
-					border-bottom-width: 1rpx;
-					border-bottom-style: solid;
-					border-bottom-color: #f5f5f5;
+					border: 1rpx solid #f5f5f5;
 
 					.expand-text {
 						font-size: 28rpx;
@@ -169,20 +458,110 @@
 					}
 				}
 
-				.setting-row {
-					flex-direction: row;
-					align-items: center;
-					padding: 24rpx 40rpx;
+				// 音频管理：下载中置灰
+				.expand-item.audio-btn.disabled {
+					opacity: 0.5;
+				}
 
-					.setting-input {
-						flex: 1;
-						height: 72rpx;
-						padding: 0 20rpx;
-						background-color: #f5f5f5;
-						border-radius: 8rpx;
-						font-size: 26rpx;
+				.audio-progress {
+					padding: 8rpx 40rpx 20rpx 40rpx;
+
+					text {
+						font-size: 24rpx;
+						color: #999999;
 					}
 				}
+				.setting-item{
+					padding: 24rpx 24rpx 0 24rpx;
+					border-top: 1rpx solid #f5f5f5;
+					.setting-row {
+						flex-direction: row;
+						align-items: center;
+						padding: 24rpx;
+
+						.setting-input {
+							flex: 1;
+							height: 72rpx;
+							padding: 0 20rpx;
+							background-color: #f5f5f5;
+							border-radius: 8rpx;
+						}
+
+						// uvue 仅 text/button/input 等支持 font-size：
+						// input 单独设置，picker 容器（view）的文字样式放到内部 text 上
+						input.setting-input {
+							font-size: 26rpx;
+						}
+
+						.setting-picker {
+							flex-direction: row;
+							align-items: center;
+
+							text {
+								font-size: 26rpx;
+								color: #333333;
+							}
+						}
+
+						.mode-list{
+							display: flex;
+							flex-direction: row;
+							border: 1rpx solid #f5f5f5;
+							.mode-list-item{
+								padding: 10rpx 16rpx;
+								border-left: 1rpx solid #f5f5f5;
+								&.active{
+									background-color: #f1be56;
+								}
+							}
+						}
+					}
+				}
+
+				// 阅读设置：背景色块选择
+				.color-row {
+					flex-direction: row;
+					flex-wrap: wrap;
+
+					.color-block {
+						width: 48rpx;
+						height: 48rpx;
+						border-radius: 8rpx;
+						border: 2rpx solid #dddddd;
+						margin-right: 20rpx;
+						margin-bottom: 16rpx;
+
+						&.active {
+							border: 4rpx solid #f1be56;
+						}
+					}
+				}
+
+				// 语气控制：情感向量 / 语气浓度滑块行
+				.emo-row {
+					flex-direction: row;
+					align-items: center;
+					padding: 10rpx 24rpx;
+
+					.emo-label {
+						width: 120rpx;
+						font-size: 24rpx;
+						color: #666666;
+					}
+
+					.emo-slider {
+						flex: 1;
+						margin: 0 12rpx;
+					}
+
+					.emo-value {
+						width: 70rpx;
+						text-align: right;
+						font-size: 22rpx;
+						color: #999999;
+					}
+				}
+				
 			}
 		}
 	}

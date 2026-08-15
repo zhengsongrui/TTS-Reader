@@ -83,3 +83,13 @@ export class SidebarItem {
 		this.value = value
 	}
 }
+
+// 音色（语音合成角色）
+export class Voice {
+	name: string = ''
+	id: string = ''
+	constructor(name: string, id: string) {
+		this.name = name
+		this.id = id
+	}
+}

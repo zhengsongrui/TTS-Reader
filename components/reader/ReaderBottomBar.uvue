@@ -1,6 +1,7 @@
 <template>
 	<view class="bottom-bar" v-show="visible">
 		<view class="bar-item" @click="emit('listen')"><text>听书</text></view>
+		<view class="bar-item" @click="emit('operateLocalAudio')"><text>{{ haveLocalAudio ? '删除音频' : '缓存音频' }}</text></view>
 		<view class="bar-item" @click="emit('toggleBookmark')"><text>{{ bookmarked ? '删除书签' : '添加书签' }}</text></view>
 		<view class="bar-item" @click="emit('more')"><text>更多</text></view>
 	</view>
@@ -10,10 +11,13 @@
 	const props = defineProps<{
 		visible: boolean
 		bookmarked: boolean
+		// 当前句是否已有本地音频（由父页面通过 audio-player.hasFile 计算传入）
+		haveLocalAudio: boolean
 	}>()
 
 	const emit = defineEmits<{
 		(e: 'listen'): void
+		(e: 'operateLocalAudio'): void
 		(e: 'toggleBookmark'): void
 		(e: 'more'): void
 	}>()

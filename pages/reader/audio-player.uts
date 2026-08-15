@@ -1,0 +1,433 @@
+/**
+ * 听书音频播放组合式函数
+ *
+ * 从 class Listen 迁移为函数式写法，保持逻辑不变，负责：
+ *  - 请求队列（串行下载，enqueue 去重）
+ *  - 播放 / 错误续播（播放完成推进回调由页面注入）
+ *  - 预取当前句及后 3 句入队
+ *  - 跨章读取正文并切句
+ *
+ * UTS error18 注意事项：嵌套闭包（匿名函数）内引用外层局部函数必须词法上先定义，
+ * function 声明的提升在闭包内不生效。故：
+ *  - process 闭包引用的 getText / save 定义在其之前；
+ *  - process 的「出队 + 续播」逻辑内联，避免 process ↔ done 循环前向引用。
+ */
+import type { ReaderApi } from './reader.uts'
+import { ref } from 'vue'
+import { parseSentence, formatContent } from '../../common/text'
+import { readChapter } from '../../common/reader'
+import { requestListen } from '../../common/tts'
+
+// uni-app x 不支持 _doc 虚拟路径，使用 USER_DATA_PATH 持久目录
+const DIR = uni.env.USER_DATA_PATH + '/listen/'
+
+/** 组合式函数对外暴露的 API（显式声明，UTS 对象字面量需要明确类型） */
+export type AudioPlayerApi = {
+	/** 是否播放中 */
+	playing: Ref<boolean>
+
+	/** 当前句（key 形如 章节_句子）是否已有本地音频 */
+	hasFile: (key: string) => boolean
+	/** 下载并缓存单句音频：成功 onDone，失败 onFail */
+	cacheSentence: (key: string, onDone: () => void, onFail: () => void) => void
+	/** 删除单句本地音频，返回是否删除成功 */
+	deleteSentenceAudio: (key: string) => boolean
+
+	/** 播放指定句子：已有音频直接播放，播放完成/出错触发推进回调续播下一句 */
+	play: (sentence: string, onEnded: (nextSentence: string) => void) => void
+
+	/** 停止播放：销毁音频实例并复位播放状态 */
+	stop: () => void
+	/** 当前播放音频跳转：delta 秒（正前进，负后退），未播放时无操作 */
+	seek: (delta: number) => void
+	
+	/** 销毁音频实例（页面卸载时调用，释放资源） */
+	dispose: () => void
+
+	isListenMode: Ref<boolean>
+	/** 注入「下载完成待播放」回调（由页面指向 bookmark.handleSentenceClick） */
+	onNeedPlay: (cb: () => void) => void
+
+	/** 当前章已下载音频数量 */
+	countChapterAudio: (ci: number) => number
+	/** 本书已下载音频总数 */
+	countBookAudio: () => number
+	/** 串行下载当前章全部段落音频（已存在跳过），onProgress 上报 (done,total)，onFinish 整章处理完毕 */
+	downloadChapter: (onProgress: (done: number, total: number) => void, onFinish: () => void) => void
+	/** 删除本章音频，返回删除数量 */
+	deleteChapterAudio: (ci: number) => number
+	/** 删除本书音频，返回删除数量 */
+	deleteBookAudio: () => number
+}
+
+/**
+ * 创建听书播放器
+ * @param reader 阅读核心组合式函数（提供书名、章节、当前正文等共享状态）
+ */
+export function useAudioPlayer(reader: ReaderApi): AudioPlayerApi {
+	let audio: InnerAudioContext | null = null
+	// 净化后的书名（懒初始化，用于音频文件名）
+	let audioTitle = ''
+	// 请求队列（ci_si）：enqueue 去重，process 串行出队
+	let queue: string[] = []
+	let processing = false
+	// 是否播放中
+	const playing = ref(false)
+	// 是否为听书模式
+	const isListenMode = ref(false)
+	// 下载完成待播放回调（页面注入，指向 bookmark.handleSentenceClick）
+	let needPlay: () => void = () => {}
+	
+
+	/** 净化书名（去除文件名非法字符），懒初始化 */
+	function safeTitle(): string {
+		if (audioTitle == '') {
+			audioTitle = reader.bookTitle.value.replace(/[/\\:*?"<>|]/g, '_')
+		}
+		return audioTitle
+	}
+
+	/** 下一句推进：同章 si+1，章末 (ci+1)_0 */
+	function next(key: string): string {
+		const parts = parseSentence(key)
+		const ci = parts[0]
+		const si = parts[1]
+		if (si + 1 < reader.content.value.length) return ci + '_' + (si + 1)
+		if (ci + 1 < reader.chapters.value.length) return (ci + 1) + '_0'
+		return ''
+	}
+
+	/** 本地是否已有该句音频 */
+	function hasFile(key: string): boolean {
+		try {
+			uni.getFileSystemManager().accessSync(DIR + safeTitle() + '_' + key + '.mp3')
+			return true
+		} catch (e) {
+			return false
+		}
+	}
+
+	/** 取句子文本：当前章直接用已加载 content，跨章后台读正文切句（process 闭包引用，须定义在 process 之前） */
+	function getText(ci: number, si: number): string {
+		if (ci == reader.currentIndex.value && si < reader.content.value.length) return reader.content.value[si]
+		const ch = reader.chapters.value[ci]
+		if (ch == null) return ''
+		const text = readChapter(reader.filePath.value, ch.startByte, ch.endByte, reader.encoding.value)
+		const arr = formatContent(text, ch.title)
+		return si < arr.length ? arr[si] : ''
+	}
+
+	/** MP3 数据有效性校验：ID3 标签或 MPEG 帧同步头，且长度足够（拦截无效响应，避免写入坏文件） */
+	function isValidMp3(data: ArrayBuffer): boolean {
+		if (data.byteLength < 100) return false
+		const view = new Uint8Array(data)
+		const b0 = view[0]
+		const b1 = view[1]
+		// ID3v2 标签：'ID3'
+		if (b0 == 0x49 && b1 == 0x44 && view[2] == 0x33) return true
+		// MPEG 音频帧同步：0xFF 0xEx / 0xFF 0xFx
+		if (b0 == 0xFF && (b1 & 0xE0) == 0xE0) return true
+		return false
+	}
+
+	/** 写音频文件（process 闭包引用，须定义在 process 之前） */
+	function save(key: string, data: ArrayBuffer): void {
+		try {
+			const fm = uni.getFileSystemManager()
+			// 目录已存在时 mkdirSync 会抛错，先检查再创建
+			try {
+				fm.accessSync(DIR)
+			} catch (e) {
+				fm.mkdirSync(DIR, true)
+			}
+			// encoding 为必填参数；data 为 ArrayBuffer 时按二进制写入，utf-8 为合法值
+			fm.writeFileSync(DIR + safeTitle() + '_' + key + '.mp3', data, 'utf-8')
+		} catch (e) {
+			console.error('write audio error', e)
+		}
+	}
+
+	/** 步骤3：串行请求——一次仅处理队首，完成（写文件）后出队并递归续播下一段 */
+	function process(): void {
+		if (processing || queue.length == 0) return
+		processing = true
+		const key = queue[0]
+		const parts = parseSentence(key)
+		// 后台线程读章节正文并切句，避免阻塞 UI
+		UTSAndroid.getDispatcher('io').async(function(_) {
+			const text = getText(parts[0], parts[1])
+			UTSAndroid.getDispatcher('main').async(function(_) {
+				// 出队并释放繁忙标志，递归处理下一段（内联，规避 process↔done 循环前向引用）
+				const done = () => {
+					queue.shift()
+					processing = false
+					process()
+				}
+				if (text == '') {
+					done()
+					return
+				}
+				requestListen(text, (data: ArrayBuffer) => {
+					// 校验音频有效性：地址配置错误等场景下服务端可能返回 200 + 无效短数据，
+					// 直接写入会生成坏 mp3，此处拦截
+					if (!isValidMp3(data)) {
+						console.error('invalid audio, skip save key=' + key)
+						uni.showToast({ title: '音频数据无效' })
+						done()
+						return
+					}
+					save(key, data)
+					done()
+					// 下载完成：听书模式下无播放时，触发播放当前句
+					if (isListenMode.value && !playing.value) {
+						needPlay()
+					}
+				}, () => done())
+			}, null)
+		}, null)
+	}
+
+	/** 步骤2：预取 activeSentence 及后 3 句（共 4 句）入队，去重后启动串行下载 */
+	function enqueue(from: string): void {
+		if (from == '') return
+		let key = from
+		for (let i = 0; i < 8; i++) {
+			if (queue.indexOf(key) < 0 && !hasFile(key)) {
+				queue.push(key)
+			}
+			key = next(key)
+			if (key == '') break
+		}
+		process()
+	}
+
+	/** 步骤1：已有音频则直接播放，播放完成/出错触发回调推进到下一句 */
+	function play(activeSentence: string, onEnded: (nextSentence: string) => void): void {
+		if (activeSentence == '') return
+		const file = DIR + safeTitle() + '_' + activeSentence + '.mp3'
+		try {
+			uni.getFileSystemManager().accessSync(file)
+			// uni-app x 复用同一上下文换源播放不可靠：每次播放销毁旧上下文并重建
+			if (audio != null) {
+				const old = audio!
+				old.destroy()
+			}
+			const ctx = uni.createInnerAudioContext()
+			audio = ctx
+			// 播放完成：延迟到 ended 事件处理完后再续播，避免同一事件栈内重建上下文失效
+			ctx.onEnded(() => {
+				playing.value = false
+				const nx = next(activeSentence)
+				if (nx != '') setTimeout(() => onEnded(nx), 0)
+			})
+			// 播放错误：记录并推进到下一句，避免播放中断
+			ctx.onError((e) => {
+				playing.value = false
+				uni.showToast({ title: e.errMsg })
+			})
+			ctx.src = file
+			ctx.play()
+			playing.value = true
+		} catch (e) {
+			console.log(e)
+			// 暂无本地音频：入队下载
+			// uni.showToast({ title: '暂无本地音频' })
+		}
+		enqueue(activeSentence)
+	}
+
+	
+
+	/** 停止播放：销毁音频实例并复位播放状态 */
+	function stop(): void {
+		if (audio != null) {
+			const old = audio!
+			old.destroy()
+			audio = null
+		}
+		playing.value = false
+	}
+
+	/** 销毁音频实例（页面卸载时调用，释放资源），复用 stop 逻辑 */
+	function dispose(): void {
+		stop()
+	}
+
+	/** 当前播放音频跳转：delta 秒（正前进，负后退），未播放时无操作 */
+	function seek(delta: number): void {
+		if (audio == null || !playing.value) return
+		const ctx = audio!
+		const t = ctx.currentTime + delta
+		const d = ctx.duration
+		if (t <= 0) {
+			// 后退越界：回到开头
+			ctx.seek(0)
+		} else if (d > 0 && t >= d) {
+			// 前进越界：跳到结尾前，交由 ended 事件推进下一句
+			ctx.seek(d - 0.1)
+		} else {
+			ctx.seek(t)
+		}
+	}
+
+	/** 列出本书全部音频文件名（目录不存在时返回空数组） */
+	function listAudio(): string[] {
+		const files: string[] = []
+		try {
+			const fm = uni.getFileSystemManager()
+			const names = fm.readdirSync(DIR)
+			if (names != null) {
+				const prefix = safeTitle() + '_'
+				for (let i = 0; i < names.length; i++) {
+					if (names[i].startsWith(prefix)) {
+						files.push(names[i])
+					}
+				}
+			}
+		} catch (e) {
+			console.error('list audio error', e)
+		}
+		return files
+	}
+
+	/** 当前章已下载音频数量 */
+	function countChapterAudio(ci: number): number {
+		const prefix = safeTitle() + '_' + ci + '_'
+		const files = listAudio()
+		let n = 0
+		for (let i = 0; i < files.length; i++) {
+			if (files[i].startsWith(prefix)) n++
+		}
+		return n
+	}
+
+	/** 本书已下载音频总数 */
+	function countBookAudio(): number {
+		return listAudio().length
+	}
+
+	/** 串行下载当前章全部段落音频：快照章节句子，已存在跳过，onProgress 上报 (done,total)，onFinish 整章处理完毕 */
+	function downloadChapter(onProgress: (done: number, total: number) => void, onFinish: () => void): void {
+		const ci = reader.currentIndex.value
+		const sentences = reader.content.value
+		const total = sentences.length
+		if (total == 0) {
+			onFinish()
+			return
+		}
+		let done = 0
+		function nextOne(si: number): void {
+			if (si >= total) {
+				onProgress(done, total)
+				onFinish()
+				return
+			}
+			const key = ci + '_' + si
+			if (hasFile(key)) {
+				done++
+				onProgress(done, total)
+				nextOne(si + 1)
+				return
+			}
+			requestListen(sentences[si], (data: ArrayBuffer) => {
+				if (isValidMp3(data)) {
+					save(key, data)
+					done++
+				}
+				onProgress(done, total)
+				nextOne(si + 1)
+			}, () => {
+				onProgress(done, total)
+				nextOne(si + 1)
+			})
+		}
+		nextOne(0)
+	}
+
+	/** 删除本章全部音频，返回删除数量 */
+	function deleteChapterAudio(ci: number): number {
+		const prefix = safeTitle() + '_' + ci + '_'
+		const fm = uni.getFileSystemManager()
+		const files = listAudio()
+		let n = 0
+		for (let i = 0; i < files.length; i++) {
+			if (files[i].startsWith(prefix)) {
+				try {
+					fm.unlinkSync(DIR + files[i])
+					n++
+				} catch (e) {
+					console.error('unlink chapter audio error', e)
+				}
+			}
+		}
+		return n
+	}
+
+	/** 删除本书全部音频，返回删除数量 */
+	function deleteBookAudio(): number {
+		const fm = uni.getFileSystemManager()
+		const files = listAudio()
+		let n = 0
+		for (let i = 0; i < files.length; i++) {
+			try {
+				fm.unlinkSync(DIR + files[i])
+				n++
+			} catch (e) {
+				console.error('unlink book audio error', e)
+			}
+		}
+		return n
+	}
+
+	/** 下载并缓存单句音频：后台线程取文本，合成成功后写文件，onDone/onFail 回传结果 */
+	function cacheSentence(key: string, onDone: () => void, onFail: () => void): void {
+		const parts = parseSentence(key)
+		UTSAndroid.getDispatcher('io').async(function(_) {
+			const text = getText(parts[0], parts[1])
+			UTSAndroid.getDispatcher('main').async(function(_) {
+				if (text == '') {
+					onFail()
+					return
+				}
+				requestListen(text, (data: ArrayBuffer) => {
+					if (isValidMp3(data)) {
+						save(key, data)
+						onDone()
+					} else {
+						onFail()
+					}
+				}, () => onFail())
+			}, null)
+		}, null)
+	}
+
+	/** 删除单句本地音频，返回是否删除成功 */
+	function deleteSentenceAudio(key: string): boolean {
+		try {
+			uni.getFileSystemManager().unlinkSync(DIR + safeTitle() + '_' + key + '.mp3')
+			return true
+		} catch (e) {
+			console.error('unlink sentence audio error', e)
+			return false
+		}
+	}
+
+	return {
+		playing: playing,
+		// UTS 编译器已知问题(error17)：对象字面量中不能直接引用函数名，需用箭头函数显式包装
+		hasFile: (key: string) => hasFile(key),
+		cacheSentence: (key: string, onDone: () => void, onFail: () => void) => cacheSentence(key, onDone, onFail),
+		deleteSentenceAudio: (key: string) => deleteSentenceAudio(key),
+		play: (sentence: string, onEnded: (toSentence: string) => void) => play(sentence, onEnded),
+		stop: () => stop(),
+		seek: (delta: number) => seek(delta),
+		dispose: () => dispose(),
+		isListenMode,
+		onNeedPlay: (cb: () => void) => { needPlay = cb },
+		countChapterAudio: (ci: number) => countChapterAudio(ci),
+		countBookAudio: () => countBookAudio(),
+		downloadChapter: (onProgress: (done: number, total: number) => void, onFinish: () => void) => downloadChapter(onProgress, onFinish),
+		deleteChapterAudio: (ci: number) => deleteChapterAudio(ci),
+		deleteBookAudio: () => deleteBookAudio(),
+	}
+}

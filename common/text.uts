@@ -1,19 +1,27 @@
 // 阅读页文本纯函数
 
 // 按句号/问号/感叹号切分句子（引号内不切分）；
-// 换行符左右为中文视为文本错误直接去掉，否则作为切分标记
+// 换行符左右为文字（非标点符号）视为文本错误直接去掉换行符，否则作为切分标记
 export function formatContent(text: string, title: string): string[] {
-	const body = text.replace(title, '')
+	const body = text.replace(title, '').replace(/\s+/g, '').replace(/[*＊]/g, '')
 	const result: string[] = []
 	let current = ''
 	let quoteDepth = 0
-	// 句首无全角空格占位符时补上
-	const pushSentence = (s: string) => result.push(s.startsWith('　　') ? s : '　　' + s)
-	// 是否为中文字符（CJK 统一表意文字）
-	const isCJK = (c: string): boolean => {
+	// 先去掉所有空白符号，再在句首补上两个全角空格占位符
+	const pushSentence = (s: string) => result.push('　　' + s)
+	// 是否为文字（非标点符号）：中英文标点之外均视为文字
+	const isText = (c: string): boolean => {
 		if (c.length == 0) return false
 		const code = c.charCodeAt(0) ?? 0
-		return code >= 0x4e00 && code <= 0x9fff
+		// ASCII 标点符号区（! " # $ % & ' ( ) * + , - . / 等）
+		if ((code >= 0x21 && code <= 0x2f) ||
+			(code >= 0x3a && code <= 0x40) ||
+			(code >= 0x5b && code <= 0x60) ||
+			(code >= 0x7b && code <= 0x7e)) {
+			return false
+		}
+		// 常见中文标点
+		return '，。？！、；：（）《》〈〉【】—…·'.indexOf(c) < 0
 	}
 	for (let i = 0; i < body.length; i++) {
 		const ch = body.charAt(i)
@@ -24,9 +32,14 @@ export function formatContent(text: string, title: string): string[] {
 				j++
 			}
 			const prev = i > 0 ? body.charAt(i - 1) : ''
-			const next = j < body.length ? body.charAt(j) : ''
-			// 左右均为中文：视为文本错误直接去掉，不切分
-			if (isCJK(prev) && isCJK(next)) {
+			// 向后跳过换行后的空白字符，再判断是否为文字（如 "自己\r\n\r\n    身前"）
+			let k = j
+			while (k < body.length && (body.charAt(k) == ' ' || body.charAt(k) == '\t')) {
+				k++
+			}
+			const next = k < body.length ? body.charAt(k) : ''
+			// 换行前后均为文字（非标点符号）：视为文本错误直接去掉换行符，不切分
+			if (isText(prev) && isText(next)) {
 				i = j - 1
 				continue
 			}
@@ -39,9 +52,9 @@ export function formatContent(text: string, title: string): string[] {
 			continue
 		}
 		current += ch
-		if (ch == '“' || ch == '‘') {
+		if (ch == '“' || ch == '‘' || ch == '「' || ch == '『') {
 			quoteDepth++
-		} else if (ch == '”' || ch == '’') {
+		} else if (ch == '”' || ch == '’' || ch == '」' || ch == '』') {
 			if (quoteDepth > 0) {
 				quoteDepth--
 			}

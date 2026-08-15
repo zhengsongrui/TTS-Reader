@@ -1,0 +1,155 @@
+/**
+ * 书签组合式函数
+ *
+ * 从 class BookmarkState 迁移为函数式写法，保持逻辑不变，负责：
+ *  - 当前高亮句子、播放状态、书签状态
+ *  - 书签增删查（本地存储读写）
+ *  - bookId 通过 Ref 参数注入，页面 onLoad 赋值后 watchEffect 自动加载书签 key
+ *
+ * 注意：组合式函数内部统一用 function 声明（会被提升），
+ * 避免 const 箭头函数的前向引用触发 UTS error18「找不到名称」。
+ */
+import { ref, watchEffect } from 'vue'
+import type { Bookmark } from '../../common/models'
+import { addBookmark, removeBookmark, getBookmarks, isBookmarked } from '../../common/db'
+import { parseSentence } from '../../common/text'
+
+/** 组合式函数对外暴露的 API（显式声明，UTS 对象字面量需要明确类型） */
+export type BookmarkApi = {
+	/** 当前高亮句子（'' 表示无） */
+	activeSentence: Ref<string>
+	/** 当前句子是否已加书签 */
+	bookmarked: Ref<boolean>
+	/** 书签列表 */
+	bookmarks: Ref<Bookmark[]>
+	/** 该书全部已加书签句子 key 数组（章节_句子），用于正文下划线标识 */
+	bookmarkKeys: Ref<string[]>
+	/** 点击句子：高亮 + 刷新书签状态；播放中则播放该句并预取 */
+	handleSentenceClick: (toSentence: string) => void
+	/** 添加/删除书签 */
+	toggleBookmark: () => void
+	/** 重新加载该书全部书签（侧边栏打开时） */
+	refresh: () => void
+	/** 书签跳转：设置高亮与书签状态 */
+	highlight: (chapterIndex: number, sentenceIndex: number) => void
+	/** 清空当前高亮 */
+	clearActive: () => void
+	/** 切换播放状态 */
+	checkPlayingStatus: () => void
+}
+
+/** useBookmark 依赖注入参数（具名传入，避免零散参数） */
+export type BookmarkOptions = {
+	bookId: Ref<number>
+	getContent: () => string[]
+	playAudio: (sentence: string, onEnded: (nextSentence: string) => void) => void
+	isListenMode: Ref<boolean>
+	stopAudio: () => void
+}
+
+/**
+ * 书签组合式函数
+ * @param options.bookId       当前书籍 id（页面 onLoad 赋值，watchEffect 联动加载书签）
+ * @param options.getContent   取当前章句子文本的回调
+ * @param options.playAudio    点击句子播放音频回调（由页面注入，指向听书组合式函数）；onEnded 为播放完成推进回调
+ * @param options.isListenMode 是否听书模式
+ * @param options.stopAudio    停止音频播放回调（由页面注入，指向听书组合式函数的 stop）
+ */
+export function useBookmark(options: BookmarkOptions): BookmarkApi {
+	// 当前高亮句子（'' 表示无）
+	const activeSentence = ref('')
+	// 当前句子是否已加书签
+	const bookmarked = ref(false)
+	// 书签列表
+	const bookmarks = ref<Bookmark[]>([])
+	// 该书全部已加书签句子 key 数组（章节_句子），用于正文下划线标识
+	const bookmarkKeys = ref<string[]>([])
+
+	// bookId 在页面 onLoad 中赋值（0 → 书籍 id），watchEffect 联动自动加载该书全部书签 key，
+	// 替代原 class 的手动 loadKeys() 调用
+	watchEffect(() => {
+		const id = options.bookId.value
+		if (id > 0) {
+			bookmarkKeys.value = getBookmarks(id).map((b) => b.chapterIndex + '_' + b.sentenceIndex)
+		}
+	})
+
+	/** 点击句子：高亮 + 刷新书签状态；播放中则播放该句并预取 */
+	function handleSentenceClick(toSentence: string): void {
+		if (options.isListenMode.value) {
+			// 听书模式：更新当前句并播放
+			if (toSentence) {
+				activeSentence.value = toSentence
+			}
+			options.stopAudio()
+			setTimeout(()=>{
+				options.playAudio(activeSentence.value,(nx)=>handleSentenceClick(nx))
+			},10)
+		} else {
+			if (activeSentence.value == toSentence) {
+				activeSentence.value = ''
+			} else {
+				activeSentence.value = toSentence
+			}
+		}
+		const parts = parseSentence(toSentence)
+		bookmarked.value = isBookmarked(options.bookId.value, parts[0], parts[1])
+	}
+
+	/** 添加/删除书签 */
+	function toggleBookmark(): void {
+		const parts = parseSentence(activeSentence.value)
+		if (bookmarked.value) {
+			removeBookmark(options.bookId.value, parts[0], parts[1])
+			bookmarked.value = false
+			bookmarkKeys.value = bookmarkKeys.value.filter(k => k != activeSentence.value)
+			uni.showToast({ title: '已删除书签' })
+		} else {
+			addBookmark(options.bookId.value, parts[0], parts[1], parts[1] < options.getContent().length ? options.getContent()[parts[1]] : '')
+			bookmarked.value = true
+			bookmarkKeys.value.push(activeSentence.value)
+			uni.showToast({ title: '已添加书签' })
+		}
+	}
+
+	/** 重新加载该书全部书签（侧边栏打开时） */
+	function refresh(): void {
+		bookmarks.value = getBookmarks(options.bookId.value)
+	}
+
+	/** 书签跳转：设置高亮与书签状态 */
+	function highlight(chapterIndex: number, sentenceIndex: number): void {
+		activeSentence.value = chapterIndex + '_' + sentenceIndex
+		bookmarked.value = true
+	}
+
+	/** 清空当前高亮 */
+	function clearActive(): void {
+		activeSentence.value = ''
+	}
+
+	/** 切换听书状态 */
+	function checkPlayingStatus(): void {
+		options.isListenMode.value = !options.isListenMode.value
+		if (options.isListenMode.value) {
+			handleSentenceClick(activeSentence.value)
+		}else{
+			// 停止音频播放：退出听书模式时停止播放
+			options.stopAudio()
+		}
+	}
+
+	return {
+		activeSentence: activeSentence,
+		bookmarked: bookmarked,
+		bookmarks: bookmarks,
+		bookmarkKeys: bookmarkKeys,
+		// UTS 编译器已知问题(error17)：对象字面量中不能直接引用函数名，需用箭头函数显式包装
+		handleSentenceClick: (toSentence: string) => handleSentenceClick(toSentence),
+		toggleBookmark: () => toggleBookmark(),
+		refresh: () => refresh(),
+		highlight: (chapterIndex: number, sentenceIndex: number) => highlight(chapterIndex, sentenceIndex),
+		clearActive: () => clearActive(),
+		checkPlayingStatus: () => checkPlayingStatus()
+	}
+}

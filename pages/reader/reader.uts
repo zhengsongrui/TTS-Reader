@@ -1,0 +1,166 @@
+/**
+ * 阅读页核心逻辑（组合式函数）
+ *
+ * 从 class Reader 迁移为函数式写法，保持章节加载/切换/进度逻辑不变，负责：
+ *  - 章节状态：chapters / currentIndex / content / scrollIntoViewId / encoding
+ *  - 章节加载（后台线程读文件 + 解码）
+ *  - 章节切换与滚动进度防抖保存
+ *  - 书名 / 文件路径以 ref 暴露，供听书组合式函数共享
+ *
+ * 注意：组合式函数内部统一用 function 声明（会被提升），
+ * 避免 const 箭头函数的前向引用触发 UTS error18「找不到名称」。
+ */
+import { ref, nextTick } from 'vue'
+import type { Chapter } from '../../common/models'
+import { getBookInfo, getBookTitle, loadChapters, saveReadingProgress, getReadingProgress } from '../../common/db'
+import { readChapter } from '../../common/reader'
+import { formatContent } from '../../common/text'
+
+/** 组合式函数对外暴露的 API（显式声明，UTS 对象字面量需要明确类型） */
+export type ReaderApi = {
+	/** 章节索引列表 */
+	chapters: Ref<Chapter[]>
+	/** 当前章节索引 */
+	currentIndex: Ref<number>
+	/** 当前章句子列表 */
+	content: Ref<string[]>
+	/** 滚动定位目标 id */
+	scrollIntoViewId: Ref<string>
+	/** 文件编码 */
+	encoding: Ref<string>
+	/** 书名（听书文件名使用） */
+	bookTitle: Ref<string>
+	/** 书本文件路径 */
+	filePath: Ref<string>
+	/** 初始化：加载书籍信息、章节、上次进度 */
+	init: (bookId: number) => void
+	/** 加载章节：后台读文件 + 解码，正文渲染后按需恢复句子位置 */
+	loadChapter: (index: number, restoreSentence: number) => void
+	/** 切章并保存新章节（从顶部开始） */
+	switchChapter: (idx: number) => void
+	/** 滚动时接收正文组件反推的顶部句子索引，防抖保存进度 */
+	onScrollTop: (idx: number) => void
+	/** 退出时保存最终阅读位置 */
+	saveProgress: () => void
+	/** 上一章 */
+	prevChapter: () => void
+	/** 下一章 */
+	nextChapter: () => void
+}
+
+/**
+ * 阅读页组合式函数：集中管理阅读核心响应式状态与业务方法
+ */
+export function useReader(): ReaderApi {
+	// 章节状态
+	const chapters = ref<Chapter[]>([])
+	const currentIndex = ref(0)
+	const content = ref<string[]>([])
+	const scrollIntoViewId = ref('')
+	const encoding = ref('UTF-8')
+	// 书名 / 文件路径：由 init 赋值，响应式化以便跨组合式函数共享（听书需要）
+	const bookTitle = ref('')
+	const filePath = ref('')
+	// 内部状态
+	let bookId = 0
+	let lastSentence = 0
+	let saveTimer: number | null = null
+
+	/** 加载章节（后台读文件+解码，正文渲染后按需恢复句子位置） */
+	function loadChapter(index: number, restoreSentence: number): void {
+		if (index < 0 || index >= chapters.value.length) return
+		currentIndex.value = index
+		content.value = []
+		scrollIntoViewId.value = ''
+		UTSAndroid.getDispatcher('io').async(function(_) {
+			try {
+				let ch = chapters.value[index]
+				let text = readChapter(filePath.value, ch.startByte, ch.endByte, encoding.value)
+				UTSAndroid.getDispatcher('main').async(function(_) {
+					content.value = formatContent(text, chapters.value[currentIndex.value]?.title ?? '')
+					nextTick(() => {
+						setTimeout(()=>{
+							if (restoreSentence >= 0 && restoreSentence < content.value.length) {
+								scrollIntoViewId.value = 'c' + currentIndex.value + '_s' + restoreSentence
+							}
+						},100)
+					})
+				}, null)
+			} catch (e) {
+				console.error('read chapter error', e)
+				UTSAndroid.getDispatcher('main').async(function(_) {
+					uni.showToast({ title: '章节读取失败' })
+				}, null)
+			}
+		}, null)
+	}
+
+	/** 切章并保存新章节（从顶部开始） */
+	function switchChapter(idx: number): void {
+		if (idx < 0 || idx >= chapters.value.length) return
+		loadChapter(idx, -1)
+		saveReadingProgress(bookId, idx, 0)
+	}
+
+	/** 滚动时接收正文组件反推的顶部句子索引，防抖保存进度 */
+	function onScrollTop(idx: number): void {
+		lastSentence = idx
+		if (saveTimer == null) {
+			saveTimer = setTimeout(() => {
+				saveTimer = null
+				saveReadingProgress(bookId, currentIndex.value, lastSentence)
+			}, 500)
+		}
+	}
+
+	/** 初始化：加载书籍信息、章节、上次进度 */
+	function init(bid: number): void {
+		bookId = bid
+		bookTitle.value = getBookTitle(bid)
+		let info = getBookInfo(bid)
+		encoding.value = info.encoding
+		filePath.value = info.filePath
+		chapters.value = loadChapters(bid)
+		if (chapters.value.length > 0) {
+			const progress = getReadingProgress(bid)
+			if (progress != null && progress.lastChapterIndex < chapters.value.length) {
+				loadChapter(progress.lastChapterIndex, progress.lastSentenceIndex)
+			} else {
+				loadChapter(0, -1)
+			}
+		}
+	}
+
+	/** 退出时保存最终阅读位置 */
+	function saveProgress(): void {
+		if (chapters.value.length > 0) {
+			saveReadingProgress(bookId, currentIndex.value, lastSentence)
+		}
+	}
+
+	function prevChapter(): void {
+		switchChapter(currentIndex.value - 1)
+	}
+
+	function nextChapter(): void {
+		switchChapter(currentIndex.value + 1)
+	}
+
+	return {
+		chapters: chapters,
+		currentIndex: currentIndex,
+		content: content,
+		scrollIntoViewId: scrollIntoViewId,
+		encoding: encoding,
+		bookTitle: bookTitle,
+		filePath: filePath,
+		// UTS 编译器已知问题(error17)：对象字面量中不能直接引用函数名，需用箭头函数显式包装
+		init: (bid: number) => init(bid),
+		loadChapter: (index: number, restoreSentence: number) => loadChapter(index, restoreSentence),
+		switchChapter: (idx: number) => switchChapter(idx),
+		onScrollTop: (idx: number) => onScrollTop(idx),
+		saveProgress: () => saveProgress(),
+		prevChapter: () => prevChapter(),
+		nextChapter: () => nextChapter()
+	}
+}

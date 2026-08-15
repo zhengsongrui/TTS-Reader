@@ -19,3 +19,66 @@ export function detectEncoding(buf: ByteArray, total: Int): string {
 	}
 	return ''
 }
+
+// 统计样本中可作为合法 UTF-8 序列解析的字节覆盖率；
+// 中文 UTF-8（3 字节/字）覆盖率接近 100%，GBK（双字节）覆盖率显著偏低，
+// 且尾部截断的多字节字符不计入非法，因此比“解码含 U+FFFD”判断更稳健
+export function isLikelyUtf8(buf: ByteArray, len: Int): boolean {
+	let valid: Int = 0
+	let i: Int = 0
+	while (i < len) {
+		let b = buf[i].toInt() & 0xFF
+		if (b < 0x80) {
+			valid++
+			i++
+		} else if (b >= 0xC2 && b <= 0xDF) {
+			// 2 字节序列：110xxxxx 10xxxxxx
+			if (i + 1 < len) {
+				let b1 = buf[i + 1].toInt() & 0xFF
+				if (b1 >= 0x80 && b1 <= 0xBF) {
+					valid += 2
+					i += 2
+					continue
+				}
+			}
+			i++
+		} else if (b >= 0xE0 && b <= 0xEF) {
+			// 3 字节序列：1110xxxx 10xxxxxx 10xxxxxx（排除 E0/ED 的非法后续）
+			if (i + 2 < len) {
+				let b1 = buf[i + 1].toInt() & 0xFF
+				let b2 = buf[i + 2].toInt() & 0xFF
+				let ok = b1 >= 0x80 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF
+				if (b == 0xE0 && b1 < 0xA0) ok = false
+				if (b == 0xED && b1 > 0x9F) ok = false
+				if (ok) {
+					valid += 3
+					i += 3
+					continue
+				}
+			}
+			i++
+		} else if (b >= 0xF0 && b <= 0xF4) {
+			// 4 字节序列：11110xxx 10xxxxxx 10xxxxxx 10xxxxxx（排除 F0/F4 的非法后续）
+			if (i + 3 < len) {
+				let b1 = buf[i + 1].toInt() & 0xFF
+				let b2 = buf[i + 2].toInt() & 0xFF
+				let b3 = buf[i + 3].toInt() & 0xFF
+				let ok = b1 >= 0x80 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF && b3 >= 0x80 && b3 <= 0xBF
+				if (b == 0xF0 && b1 < 0x90) ok = false
+				if (b == 0xF4 && b1 > 0x8F) ok = false
+				if (ok) {
+					valid += 4
+					i += 4
+					continue
+				}
+			}
+			i++
+		} else {
+			// 0x80-0xBF 孤立续字节、0xC0/0xC1、0xF5-0xFF 均非法
+			i++
+		}
+	}
+	if (len == 0) return true
+	// 覆盖率 >= 95% 判为 UTF-8（容忍样本尾部截断的少量字节）
+	return valid * 100 / len >= 95
+}

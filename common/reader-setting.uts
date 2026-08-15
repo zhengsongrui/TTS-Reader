@@ -1,0 +1,53 @@
+// 阅读设置（正文句子字号 / 句间距 / 章节背景色）本地存储
+const FONT_SIZE_KEY = 'sentenceFontSize'
+const SENTENCE_MARGIN_KEY = 'sentenceMargin'
+const CHAPTER_BG_KEY = 'chapterBg'
+// 默认值（rpx / 颜色值）
+const DEFAULT_FONT_SIZE = 32
+const DEFAULT_SENTENCE_MARGIN = 0
+const DEFAULT_CHAPTER_BG = '#faf6ef'
+
+// 章节背景预设色板（浅色系，避免深色背景与固定文字颜色冲突）
+export const CHAPTER_BG_COLORS: string[] = [
+	'#faf6ef', // 米白（默认）
+	'#ffffff', // 纯白
+	'#f5f0e6', // 羊皮纸
+	'#e8f5e9', // 护眼绿
+	'#e3f2fd', // 淡蓝
+	'#fff8e1'  // 淡黄
+]
+
+// 从本地存储读取正文字号（rpx），未配置时用默认值
+export function getSentenceFontSize(): number {
+	const v = uni.getStorageSync(FONT_SIZE_KEY)
+	if (typeof v == 'number') return v as number
+	return DEFAULT_FONT_SIZE
+}
+
+// 保存正文字号（rpx）到本地存储
+export function setSentenceFontSize(size: number): void {
+	uni.setStorageSync(FONT_SIZE_KEY, size)
+}
+
+// 从本地存储读取句间距（rpx），未配置时用默认值
+export function getSentenceMargin(): number {
+	const v = uni.getStorageSync(SENTENCE_MARGIN_KEY)
+	if (typeof v == 'number') return v as number
+	return DEFAULT_SENTENCE_MARGIN
+}
+
+// 保存句间距（rpx）到本地存储
+export function setSentenceMargin(margin: number): void {
+	uni.setStorageSync(SENTENCE_MARGIN_KEY, margin)
+}
+
+// 从本地存储读取章节背景色，未配置时用默认值
+export function getChapterBg(): string {
+	let v = uni.getStorageSync(CHAPTER_BG_KEY) as string
+	return v != '' ? v : DEFAULT_CHAPTER_BG
+}
+
+// 保存章节背景色到本地存储
+export function setChapterBg(color: string): void {
+	uni.setStorageSync(CHAPTER_BG_KEY, color)
+}

@@ -1,12 +1,14 @@
 <template>
 	<scroll-view class="content-wrap" scroll-y="true" :scroll-into-view="scrollIntoViewId" @scroll="onScroll">
-		<view class="chapter" v-if="chapters.length > 0">
+		<view class="chapter" v-if="chapters.length > 0" :style="chapterStyle">
 			<text class="chapter-title">{{ chapters[currentIndex].title }}</text>
 			<view class="content">
 				<text
 					v-for="(item, index) in content"
 					:key="index"
+					class="sentence"
 					:class="sentenceClassFor(activeSentence, bookmarkKeys, currentIndex + '_' + index)"
+					:style="sentenceStyle"
 					:id="'c' + currentIndex + '_s' + index"
 					@click="onSentenceClick(currentIndex + '_' + index)">
 					{{ item }}
@@ -31,6 +33,11 @@
 		activeSentence: string
 		bookmarkKeys: string[]
 		scrollIntoViewId: string
+		isListenMode:boolean
+		// 阅读设置：正文字号（rpx）、句间距（rpx）、章节背景色
+		sentenceFontSize: number
+		sentenceMargin: number
+		chapterBg: string
 	}>()
 
 	const emit = defineEmits<{
@@ -63,6 +70,20 @@
 		nextTick(() => {
 			refreshSentenceTops()
 		})
+	})
+
+	// 章节背景动态样式（uvue :style 绑定 Map<string,string>）
+	const chapterStyle = computed<Map<string, string>>(() => {
+		const m = new Map<string, string>()
+		m.set('background-color', props.chapterBg)
+		return m
+	})
+	// 句子动态样式：字号 + 下边距
+	const sentenceStyle = computed<Map<string, string>>(() => {
+		const m = new Map<string, string>()
+		m.set('font-size', props.sentenceFontSize + 'rpx')
+		m.set('margin-bottom', props.sentenceMargin + 'rpx')
+		return m
 	})
 
 	// 点击句子：抛出事件由页面处理高亮与书签

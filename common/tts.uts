@@ -1,6 +1,19 @@
 // 听书（语音合成）请求
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
+import { Voice } from './models'
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8999'
 const BASE_URL_KEY = 'baseUrl'
+const VOICE_KEY = 'voice'
+// 语气控制存储键与默认值（emoAlpha 为 0-1，UI 以 0-100 显示后除以 100 传入）
+const EMOTION_MODE_KEY = 'emotionMode'
+const EMO_AUDIO_PROMPT_KEY = 'emoAudioPrompt'
+const EMO_VECTOR_KEY = 'emoVector'
+const EMO_ALPHA_KEY = 'emoAlpha'
+// 默认合成参数：语音 + 中性情感向量（happy, angry, sad, afraid, disgusted, melancholic, surprised, calm）
+const VOICE = 'malele_3'
+const EMOTION_MODE = 2
+const EMO_AUDIO_PROMPT = ''
+const EMO_VECTOR = [0, 0, 0, 0, 0, 0, 0, 0]
+const EMO_ALPHA = 0
 
 // 从本地存储读取服务地址，未配置时用默认值
 export function getBaseUrl(): string {
@@ -8,26 +21,151 @@ export function getBaseUrl(): string {
 	return v != '' ? v : DEFAULT_BASE_URL
 }
 
-// 听书请求：方式 2（8 维情感向量 [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]）
-export function requestListen(text: string, voice: string, emoVector: number[], format: string = 'mp3', bitrate: number = 64): void {
+// 从本地存储读取所选音色，未配置时用默认值
+export function getVoice(): string {
+	let v = uni.getStorageSync(VOICE_KEY) as string
+	return v != '' ? v : VOICE
+}
+
+// 保存所选音色到本地存储
+export function setVoice(id: string): void {
+	uni.setStorageSync(VOICE_KEY, id)
+}
+
+// 从本地存储读取语气模式（1=参考音频情感，2=8维情感向量），未配置时用默认值
+export function getEmotionMode(): number {
+	const v = uni.getStorageSync(EMOTION_MODE_KEY)
+	if (typeof v == 'number') return v as number
+	return EMOTION_MODE
+}
+
+// 保存语气模式到本地存储
+export function setEmotionMode(mode: number): void {
+	uni.setStorageSync(EMOTION_MODE_KEY, mode)
+}
+
+// 从本地存储读取语气音频（模式1 使用，取音色 id），未配置时用默认值
+export function getEmoAudioPrompt(): string {
+	let v = uni.getStorageSync(EMO_AUDIO_PROMPT_KEY) as string
+	return v != '' ? v : EMO_AUDIO_PROMPT
+}
+
+// 保存语气音频到本地存储
+export function setEmoAudioPrompt(prompt: string): void {
+	uni.setStorageSync(EMO_AUDIO_PROMPT_KEY, prompt)
+}
+
+// 从本地存储读取 8 维情感向量（模式2 使用，0-1），以逗号分隔字符串存储，未配置或不足 8 维时补零
+export function getEmoVector(): number[] {
+	let raw = uni.getStorageSync(EMO_VECTOR_KEY) as string
+	if (raw == '') return EMO_VECTOR
+	const parts = raw.split(',')
+	const arr: number[] = []
+	for (let i = 0; i < 8; i++) {
+		arr.push(i < parts.length ? Number.parseFloat(parts[i]) : 0)
+	}
+	return arr
+}
+
+// 保存 8 维情感向量到本地存储（逗号分隔）
+export function setEmoVector(vector: number[]): void {
+	let parts: string[] = []
+	for (let i = 0; i < vector.length; i++) {
+		parts.push(vector[i].toString())
+	}
+	uni.setStorageSync(EMO_VECTOR_KEY, parts.join(','))
+}
+
+// 从本地存储读取语气浓度（0-1），未配置时用默认值
+export function getEmoAlpha(): number {
+	const v = uni.getStorageSync(EMO_ALPHA_KEY)
+	if (typeof v == 'number') return v as number
+	return EMO_ALPHA
+}
+
+// 保存语气浓度到本地存储
+export function setEmoAlpha(alpha: number): void {
+	uni.setStorageSync(EMO_ALPHA_KEY, alpha)
+}
+
+// 听书请求：成功后把音频 ArrayBuffer 回传 onSuccess，失败回调 onFail
+export function requestListen(text: string, onSuccess: (data: ArrayBuffer) => void, onFail: () => void): void {
+	// 按语气模式组装请求体：模式1 参考音频情感，模式2 8维情感向量，均带语气浓度
+	const data: UTSJSONObject = {
+		text: text,
+		voice: getVoice(),
+		format: 'mp3',
+		bitrate: 64
+	}
+	if (getEmotionMode() == 1) {
+		data['emotionMode'] = 1
+		data['emoAudioPrompt'] = getEmoAudioPrompt()
+		data['emoAlpha'] = getEmoAlpha()
+	} else {
+		data['emotionMode'] = 2
+		data['emoVector'] = getEmoVector()
+		data['emoAlpha'] = getEmoAlpha()
+	}
 	uni.request({
 		url: getBaseUrl() + '/emotion-tts',
 		method: 'POST',
 		header: { 'Content-Type': 'application/json' },
-		data: {
-			text,
-			voice,
-			emotionMode: 2,
-			emoVector,
-			format,
-			bitrate
-		},
+		data: data,
 		responseType: 'arraybuffer',
 		success: (res) => {
-			console.log('听书成功', res.data)
+			// 服务端返回 JSON（如错误信息）时 res.data 是 UTSJSONObject，
+			// 强转会抛 ClassCastException，用 try/catch 拦截转失败回调
+			// console.log('TTS request success, statusCode=' + res.statusCode)
+			if (res.statusCode == 200) {
+				try {
+					const buf = res.data as ArrayBuffer
+					// console.log('TTS data ok, byteLength=' + buf.byteLength)
+					onSuccess(buf)
+				} catch (e) {
+					console.error('TTS data not ArrayBuffer, onFail')
+					onFail()
+				}
+			} else {
+				// console.error('TTS statusCode=' + res.statusCode + ', onFail')
+				onFail()
+			}
 		},
-		fail: (err) => {
-			console.error('听书失败', err)
+		fail: (e) => {
+			// console.error('TTS request fail, onFail', e)
+			onFail()
+		}
+	})
+}
+
+// 获取音色列表：成功后把 Voice[] 回传 onSuccess，失败回调 onFail
+export function requestVoices(onSuccess: (voices: Voice[]) => void, onFail: () => void): void {
+	uni.request({
+		url: getBaseUrl() + '/voices',
+		method: 'GET',
+		success: (res) => {
+			if (res.statusCode == 200) {
+				try {
+					// 服务端返回顶层 JSON 数组，res.data 运行时为 UTSArray，as 成 UTSJSONObject[] 后遍历
+					const arr = res.data as UTSJSONObject[]
+					const voices: Voice[] = []
+					if (arr != null) {
+						for (let i = 0; i < arr.length; i++) {
+							const item = arr[i] as UTSJSONObject
+							voices.push(new Voice(item['name'] as string, item['id'] as string))
+						}
+					}
+					onSuccess(voices)
+				} catch (e) {
+					console.error('parse voices error', e)
+					onFail()
+				}
+			} else {
+				onFail()
+			}
+		},
+		fail: (e) => {
+			console.error('voices request fail', e)
+			onFail()
 		}
 	})
 }

@@ -41,3 +41,18 @@
 **可选参数**：`voice`（音色）、`speed`（语速）、`seed`（固定结果）、`removeSilence`（去静音）、`format`（wav/mp3/ogg/flac，默认 mp3）、`bitrate`（仅 mp3，32~128）。
 
 **响应**：对应格式的二进制音频。
+
+## 5. 音色列表
+
+### GET /voices
+
+获取可用的语音合成音色列表。
+
+**响应**：JSON 数组，每个元素包含 `name`（显示名）与 `id`（合成请求 `voice` 字段使用的音色标识）。
+
+```json
+[
+  { "name": "乐乐3", "id": "malele_3" },
+  { "name": "malele_4", "id": "malele_4" }
+]
+```

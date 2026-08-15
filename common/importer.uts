@@ -4,7 +4,7 @@ import FileOutputStream from 'java.io.FileOutputStream'
 import InputStream from 'java.io.InputStream'
 import Uri from 'android.net.Uri'
 import { Chapter, ImportResult } from './models'
-import { decodeBytes, detectEncoding } from './encoding'
+import { decodeBytes, detectEncoding, isLikelyUtf8 } from './encoding'
 
 // 去除 BOM、全角空格等首尾空白，避免全角缩进导致章节标题识别失败
 function cleanLine(s: string): string {
@@ -16,25 +16,93 @@ function cleanLine(s: string): string {
 }
 
 // 章节标题正则（逐行增量匹配，兼容非精校版常见格式）
-const chapterReg = new RegExp('^第\\s*[0-9零一二三四五六七八九十百千万两]+\\s*[章卷节回部集]')
-const bracketChapterReg = new RegExp('^[【\\[]第\\s*[0-9零一二三四五六七八九十百千万两]+\\s*[章卷节回部集]')
+const chapterReg = new RegExp('^第\\s*[0-9零一二三四五六七八九十百千万两廿卅]+\\s*[章卷节回部集]')
+const bracketChapterReg = new RegExp('^[【\\[]第\\s*[0-9零一二三四五六七八九十百千万两廿卅]+\\s*[章卷节回部集]')
 const numChapterReg = new RegExp('^[0-9]{1,4}[.、：]')
-const cnNumChapterReg = new RegExp('^[零一二三四五六七八九十百千万两]{1,4}[、.]')
+const cnNumChapterReg = new RegExp('^[零一二三四五六七八九十百千万两廿卅]{1,4}[、.]')
 const engChapterReg = new RegExp('^[Cc]hapter\\s*[0-9]+')
 const engChapterReg2 = new RegExp('^Ch\\.\\s*[0-9]+')
 
 const specialChapters: string[] = ['序章', '楔子', '尾声', '后记', '番外', '前言', '引子', '终章', '大结局', '外传', '上卷', '中卷', '下卷']
+
+// 中文数字编号是否列表正文（如 “八三、八四……”）：编号分隔符后紧跟另一编号判为列表，非章节标题
+function isCnNumListTail(t: string): boolean {
+	const cn = '零一二三四五六七八九十百千万两廿卅'
+	let i = 0
+	let n = 0
+	while (i < t.length && n < 4 && cn.indexOf(t.charAt(i)) >= 0) { i++; n++ }
+	if (n == 0 || i >= t.length) return false
+	if (t.charAt(i) != '、' && t.charAt(i) != '.') return false
+	return i + 1 < t.length && cn.indexOf(t.charAt(i + 1)) >= 0
+}
+
+// 阿拉伯数字编号是否列表正文（如 “83、84……”）
+function isNumListTail(t: string): boolean {
+	let i = 0
+	let n = 0
+	while (i < t.length && n < 4 && t.charCodeAt(i)! >= 48 && t.charCodeAt(i)! <= 57) { i++; n++ }
+	if (n == 0 || i >= t.length) return false
+	if (t.charAt(i) != '.' && t.charAt(i) != '、' && t.charAt(i) != '：') return false
+	return i + 1 < t.length && t.charCodeAt(i + 1)! >= 48 && t.charCodeAt(i + 1)! <= 57
+}
 
 function isChapterLine(line: string): boolean {
 	let t = cleanLine(line)
 	if (t.length == 0 || t.length > 40) return false
 	if (chapterReg.test(t)) return true
 	if (bracketChapterReg.test(t)) return true
-	if (numChapterReg.test(t)) return true
-	if (cnNumChapterReg.test(t)) return true
+	if (numChapterReg.test(t) && !isNumListTail(t)) return true
+	if (cnNumChapterReg.test(t) && !isCnNumListTail(t)) return true
 	if (engChapterReg.test(t)) return true
 	if (engChapterReg2.test(t)) return true
 	return specialChapters.indexOf(t) >= 0
+}
+
+// 行内章节标题识别：正文末句后紧跟章节标题（如 “……。  第二十章雨夜声烦”），返回标题起始字符下标，未找到返回 -1
+function findInlineTitle(rawLine: string): number {
+	const puncts: string[] = ['。', '！', '？', '；', ';']
+	// 句末标点后可能再跟闭合引号才是标题，如 “……？”  第廿一章
+	const quotes: string[] = ['”', '’', '」', '』']
+	let best: number = -1
+	for (let p = 0; p < puncts.length; p++) {
+		let idx = rawLine.indexOf(puncts[p])
+		while (idx >= 0) {
+			let j = idx + 1
+			// 跳过标题前的闭合引号与半角/全角空格
+			while (j < rawLine.length) {
+				let c = rawLine.charAt(j)
+				if (c == ' ' || c == '　' || quotes.indexOf(c) >= 0) j++
+				else break
+			}
+			let title = rawLine.substring(j)
+			if (title.length > 0 && title.length <= 40 && isChapterLine(title)) {
+				if (best < 0 || j < best) best = j
+			}
+			idx = rawLine.indexOf(puncts[p], idx + 1)
+		}
+	}
+	return best
+}
+
+// 计算 lineBytes 解码后第 charIndex 个字符的起始字节偏移（UTF-8 / GBK / UTF-16 字节宽度累计）
+function charByteOffset(bytes: ByteArray, enc: string, charIndex: number): number {
+	// 数组索引需 Int，charIndex/返回值与调用方 inlineIdx（number）一致
+	let target: Int = charIndex.toInt()
+	let charCount: Int = 0
+	let i: Int = 0
+	while (i < bytes.size && charCount < target) {
+		let b = bytes[i].toInt() & 0xFF
+		if (enc == 'UTF-8' || enc == 'UTF8') {
+			i += (b < 0x80) ? 1 : (b >= 0xF0) ? 4 : (b >= 0xE0) ? 3 : 2
+		} else if (enc == 'UTF-16LE' || enc == 'UTF-16BE') {
+			i += 2
+		} else {
+			// GBK 等：ASCII 单字节，其余双字节
+			i += (b < 0x80) ? 1 : 2
+		}
+		charCount++
+	}
+	return i
 }
 
 // 单次整本流式读取：边复制落盘，边检测编码、边按行解析章节
@@ -61,8 +129,50 @@ export function importBook(src: string, dest: string): ImportResult {
 	let chapters: Chapter[] = []
 	let lineStartByte = 0
 	let chapterStart = 0
-	let chapterTitle = ''
+	let chapterTitle = '第1章' // 未分章时按字数自动分章的默认标题
 	let hasChapter = false
+	// 当前章累计字符数：超过 MAX_PAGE_CHARS 即视为一“页”，切为新章
+	const MAX_PAGE_CHARS: number = 15000
+	let charCount: number = 0
+
+	// 处理章节标题行：若已有章节则先入队上一章，再开启新章节（首章起点固定为 0，保留简介等前置内容）；
+	// 兼容正文末句后紧跟标题的行内章节（如 “……。  第二十章漫天”），以标题处作为新章起点
+	function addChapter(rawLine: string, lineBytes: ByteArray, lineStartByte: number): void {
+		let isTitleAtStart = isChapterLine(rawLine)
+		let inlineIdx: number = -1
+		if (!isTitleAtStart) {
+			inlineIdx = findInlineTitle(rawLine)
+		}
+		if (!isTitleAtStart && inlineIdx < 0) return
+		// 新章起始字节：行首标题取行首，行内标题取标题处（正文前半截归属上一章）
+		let boundary = lineStartByte
+		let title = cleanLine(rawLine)
+		if (inlineIdx >= 0) {
+			boundary = lineStartByte + charByteOffset(lineBytes, encoding, inlineIdx)
+			title = cleanLine(rawLine.substring(inlineIdx))
+		}
+		if (hasChapter) {
+			chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, boundary))
+			chapterStart = boundary
+			charCount = 0
+		}
+		hasChapter = true
+		chapterTitle = title
+	}
+
+	// 处理单行：先做标题识别，再按字符数自动分章（未分章的短小说累计超过 MAX_PAGE_CHARS 字即切为一章）
+	function processLine(rawLine: string, lineBytes: ByteArray, lineStartByte: number): void {
+		addChapter(rawLine, lineBytes, lineStartByte)
+		let lineChars: number = rawLine.length
+		if (charCount > MAX_PAGE_CHARS) {
+			chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, lineStartByte))
+			chapterStart = lineStartByte
+			chapterTitle = '第' + (chapters.length + 1) + '章'
+			charCount = 0
+			hasChapter = true
+		}
+		charCount += lineChars
+	}
 
 	while (true) {
 		// 填满本块（InputStream.read 可能短读）
@@ -86,31 +196,37 @@ export function importBook(src: string, dest: string): ImportResult {
 			} else {
 				let sn: Int = total < 2048 ? total : 2048
 				let sample = buf.copyOfRange(0, sn)
-				encoding = decodeBytes(sample, 'UTF-8').indexOf('\uFFFD') >= 0 ? 'GBK' : 'UTF-8'
+				// 用 UTF-8 序列覆盖率判断：合法 UTF-8 接近 100%，GBK 显著偏低
+				encoding = isLikelyUtf8(sample, sn) ? 'UTF-8' : 'GBK'
 			}
 			detected = true
 		}
 
 		// 按行增量解析章节
+		// UTF-16 的换行符为 0A 00（LE）/ 00 0A（BE）两个字节，须按两字节识别，
+		// 否则行边界错位 1 字节，导致自动分章后的章节从字符中间开始而乱码
+		let isUtf16LE = encoding == 'UTF-16LE'
+		let isUtf16BE = encoding == 'UTF-16BE'
 		let lineBegin: Int = 0
 		let i: Int = 0
 		while (i < total) {
-			if (buf[i].toInt() == 10) { // \n
-				let lineBytes = buf.copyOfRange(lineBegin, i)
-				let line = decodeBytes(lineBytes, encoding).trim()
-				if (isChapterLine(line)) {
-					if (hasChapter) {
-						chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, lineStartByte))
-					}
-					hasChapter = true
-					// 首章起点固定为 0，保留最前面非标题内容（简介等）
-					if (chapters.length > 0) {
-						chapterStart = lineStartByte
-					}
-					chapterTitle = line
+			let b = buf[i].toInt() & 0xFF
+			let isLineBreak = false
+			if (isUtf16LE || isUtf16BE) {
+				if (i + 1 < total) {
+					let b1 = buf[i + 1].toInt() & 0xFF
+					isLineBreak = (isUtf16LE && b == 0x0A && b1 == 0x00) || (isUtf16BE && b == 0x00 && b1 == 0x0A)
 				}
-				lineStartByte += (i - lineBegin + 1)
-				i++
+			} else {
+				isLineBreak = b == 0x0A
+			}
+			if (isLineBreak) {
+				let lineBytes = buf.copyOfRange(lineBegin, i)
+				let rawLine = decodeBytes(lineBytes, encoding)
+				processLine(rawLine, lineBytes, lineStartByte)
+				let sep: Int = (isUtf16LE || isUtf16BE) ? 2 : 1
+				lineStartByte += (i - lineBegin + sep)
+				i += sep
 				lineBegin = i
 			} else {
 				i++
@@ -133,18 +249,9 @@ export function importBook(src: string, dest: string): ImportResult {
 
 	// 处理最后的未完成行
 	if (remainSize > 0) {
-		let line = decodeBytes(buf.copyOfRange(0, remainSize), encoding).trim()
-		if (isChapterLine(line)) {
-			if (hasChapter) {
-				chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, lineStartByte))
-			}
-			hasChapter = true
-			// 首章起点固定为 0，保留最前面非标题内容（简介等）
-			if (chapters.length > 0) {
-				chapterStart = lineStartByte
-			}
-			chapterTitle = line
-		}
+		let lineBytes = buf.copyOfRange(0, remainSize)
+		let rawLine = decodeBytes(lineBytes, encoding)
+		processLine(rawLine, lineBytes, lineStartByte)
 	}
 	if (hasChapter) {
 		chapters.push(new Chapter(chapters.length, chapterTitle, chapterStart, fileSize))

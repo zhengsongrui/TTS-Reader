@@ -1,0 +1,70 @@
+/**
+ * 侧边栏组合式函数
+ *
+ * 从 class Sidebar 迁移为函数式写法，负责：
+ *  - 侧边栏显隐
+ *  - 展开项切换（目录 / 书签 / 情感推理 / 设置）
+ *  - 菜单项定义
+ *
+ * 注意：组合式函数内部统一用 function 声明（会被提升），
+ * 避免 const 箭头函数的前向引用触发 UTS error18「找不到名称」。
+ */
+import { ref } from 'vue'
+import { SidebarItem } from '../../common/models'
+
+/** 组合式函数对外暴露的 API（显式声明，UTS 对象字面量需要明确类型） */
+export type SidebarApi = {
+	/** 侧边栏是否可见 */
+	visible: Ref<boolean>
+	/** 展开项：'' | 'catalog' | 'bookmark' | 'reasoning' | 'listenSetting' | 'readSetting' */
+	expanded: Ref<string>
+	/** 侧边栏菜单项 */
+	items: Ref<SidebarItem[]>
+	/** 打开侧边栏 */
+	open: () => void
+	/** 关闭侧边栏 */
+	close: () => void
+	/** 菜单项点击：切换展开项 */
+	onItemClick: (value: string) => void
+}
+
+/**
+ * 侧边栏组合式函数
+ */
+export function useSidebar(): SidebarApi {
+	const visible = ref(false)
+	const expanded = ref('catalog')
+	const items = ref<SidebarItem[]>([
+		new SidebarItem('目录', 'catalog'),
+		new SidebarItem('书签', 'bookmark'),
+		new SidebarItem('情感推理', 'reasoning'),
+		new SidebarItem('音频管理', 'audioManage'),
+		new SidebarItem('听书设置', 'listenSetting'),
+		new SidebarItem('阅读设置', 'readSetting')
+	])
+
+	/** 打开侧边栏 */
+	function open(): void {
+		visible.value = true
+	}
+
+	/** 关闭侧边栏 */
+	function close(): void {
+		visible.value = false
+	}
+
+	/** 菜单项点击：切换展开项 */
+	function onItemClick(value: string): void {
+		expanded.value = value
+	}
+
+	return {
+		visible: visible,
+		expanded: expanded,
+		items: items,
+		// UTS 编译器已知问题(error17)：对象字面量中不能直接引用函数名，需用箭头函数显式包装
+		open: () => open(),
+		close: () => close(),
+		onItemClick: (value: string) => onItemClick(value)
+	}
+}
