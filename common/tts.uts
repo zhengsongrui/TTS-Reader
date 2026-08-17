@@ -112,6 +112,7 @@ export function requestListen(text: string, onSuccess: (data: ArrayBuffer) => vo
 		header: { 'Content-Type': 'application/json' },
 		data: data,
 		responseType: 'arraybuffer',
+		timeout: 300000,
 		success: (res) => {
 			// 服务端返回 JSON（如错误信息）时 res.data 是 UTSJSONObject，
 			// 强转会抛 ClassCastException，用 try/catch 拦截转失败回调

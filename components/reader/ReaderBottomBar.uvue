@@ -1,6 +1,6 @@
 <template>
 	<view class="bottom-bar" v-show="visible">
-		<view class="bar-item" @click="emit('listen')"><text>听书</text></view>
+		<view class="bar-item" @click="emit('listen')"><text>朗读</text></view>
 		<view class="bar-item" @click="emit('operateLocalAudio')"><text>{{ haveLocalAudio ? '删除音频' : '缓存音频' }}</text></view>
 		<view class="bar-item" @click="emit('toggleBookmark')"><text>{{ bookmarked ? '删除书签' : '添加书签' }}</text></view>
 		<view class="bar-item" @click="emit('more')"><text>更多</text></view>

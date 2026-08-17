@@ -1,11 +1,14 @@
-// 阅读设置（正文句子字号 / 句间距 / 章节背景色）本地存储
+// 阅读设置（正文句子字号 / 句间距 / 章节背景色 / 背景透明度 / 背景图）本地存储
 const FONT_SIZE_KEY = 'sentenceFontSize'
 const SENTENCE_MARGIN_KEY = 'sentenceMargin'
 const CHAPTER_BG_KEY = 'chapterBg'
-// 默认值（rpx / 颜色值）
+const CHAPTER_BG_ALPHA_KEY = 'chapterBgAlpha'
+const CHAPTER_BG_IMAGES_KEY = 'chapterBgImages'
+// 默认值（rpx / 颜色值 / 透明度 0-100）
 const DEFAULT_FONT_SIZE = 32
 const DEFAULT_SENTENCE_MARGIN = 0
 const DEFAULT_CHAPTER_BG = '#faf6ef'
+const DEFAULT_CHAPTER_BG_ALPHA = 100
 
 // 章节背景预设色板（浅色系，避免深色背景与固定文字颜色冲突）
 export const CHAPTER_BG_COLORS: string[] = [
@@ -50,4 +53,46 @@ export function getChapterBg(): string {
 // 保存章节背景色到本地存储
 export function setChapterBg(color: string): void {
 	uni.setStorageSync(CHAPTER_BG_KEY, color)
+}
+
+// 从本地存储读取章节背景透明度（0-100），未配置时用默认值
+export function getChapterBgAlpha(): number {
+	const v = uni.getStorageSync(CHAPTER_BG_ALPHA_KEY)
+	if (typeof v == 'number') return v as number
+	return DEFAULT_CHAPTER_BG_ALPHA
+}
+
+// 保存章节背景透明度（0-100）到本地存储
+export function setChapterBgAlpha(alpha: number): void {
+	uni.setStorageSync(CHAPTER_BG_ALPHA_KEY, alpha)
+}
+
+// 从本地存储读取章节背景图路径列表（逗号分隔字符串存储），未配置时返回空列表
+export function getChapterBgImages(): string[] {
+	let raw = uni.getStorageSync(CHAPTER_BG_IMAGES_KEY) as string
+	if (raw == '') return []
+	return raw.split(',')
+}
+
+// 保存章节背景图路径列表到本地存储（逗号分隔）
+export function setChapterBgImages(paths: string[]): void {
+	uni.setStorageSync(CHAPTER_BG_IMAGES_KEY, paths.join(','))
+}
+
+// 十六进制颜色（#rrggbb）与透明度（0-100）合成 rgba 字符串，供章节背景使用
+export function hexToRgba(hex: string, alpha: number): string {
+	let h = hex
+	if (h.length >= 7 && h.startsWith('#')) {
+		h = h.substring(1)
+	}
+	let r = 255
+	let g = 255
+	let b = 255
+	if (h.length >= 6) {
+		r = parseInt(h.substring(0, 2), 16)
+		g = parseInt(h.substring(2, 4), 16)
+		b = parseInt(h.substring(4, 6), 16)
+	}
+	let a = (alpha < 0 ? 0 : (alpha > 100 ? 100 : alpha)) / 100
+	return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')'
 }

@@ -12,6 +12,8 @@
 			:sentenceFontSize="sentenceFontSize"
 			:sentenceMargin="sentenceMargin"
 			:chapterBg="chapterBg"
+			:chapterBgAlpha="chapterBgAlpha"
+			:bgImages="chapterBgImages"
 			@sentenceClick="onSentenceClick"
 			@scrollTop="handleScrollTop" />
 
@@ -57,7 +59,9 @@
 			@deleteBookAudio="onDeleteBookAudio"
 			@fontSizeChange="onFontSizeChange"
 			@sentenceMarginChange="onSentenceMarginChange"
-			@bgColorChange="onBgColorChange" />
+			@bgColorChange="onBgColorChange"
+			@bgAlphaChange="onBgAlphaChange"
+			@bgImagesChange="onBgImagesChange" />
 		<!-- <view class="circle go" v-show="isListenMode" @click="checkPlayingStatus">
 			<text class="circle-text">快</text>
 		</view>
@@ -84,7 +88,7 @@
 	import { useSidebar } from './sidebar.uts'
 	import { parseSentence } from '../../common/text'
 	import { requestVoices, getVoice, setVoice } from '../../common/tts'
-	import { getSentenceFontSize, getSentenceMargin, getChapterBg } from '../../common/reader-setting'
+	import { getSentenceFontSize, getSentenceMargin, getChapterBg, getChapterBgAlpha, getChapterBgImages } from '../../common/reader-setting'
 	import type { Bookmark, Voice } from '../../common/models'
 	import ReaderContent from '../../components/reader/ReaderContent.uvue'
 	import ReaderFooter from '../../components/reader/ReaderFooter.uvue'
@@ -137,6 +141,8 @@
 	const sentenceFontSize = ref(getSentenceFontSize())
 	const sentenceMargin = ref(getSentenceMargin())
 	const chapterBg = ref(getChapterBg())
+	const chapterBgAlpha = ref(getChapterBgAlpha())
+	const chapterBgImages = ref<string[]>(getChapterBgImages())
 
 	// 刷新音频数量（侧边栏打开 / 下载 / 删除后调用）
 	const refreshAudioCounts = () => {
@@ -266,6 +272,8 @@
 	const onFontSizeChange = (v: number) => { sentenceFontSize.value = v }
 	const onSentenceMarginChange = (v: number) => { sentenceMargin.value = v }
 	const onBgColorChange = (color: string) => { chapterBg.value = color }
+	const onBgAlphaChange = (v: number) => { chapterBgAlpha.value = v }
+	const onBgImagesChange = (paths: string[]) => { chapterBgImages.value = paths }
 
 	// 听书模式跨章自动翻页：从当前章最后一句变为下一章第一句时，翻页到下一章
 	watch(activeSentence, (newVal: string, oldVal: string) => {

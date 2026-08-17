@@ -39,7 +39,7 @@ export function useSidebar(): SidebarApi {
 		new SidebarItem('书签', 'bookmark'),
 		new SidebarItem('情感推理', 'reasoning'),
 		new SidebarItem('音频管理', 'audioManage'),
-		new SidebarItem('听书设置', 'listenSetting'),
+		new SidebarItem('朗读设置', 'listenSetting'),
 		new SidebarItem('阅读设置', 'readSetting')
 	])
 

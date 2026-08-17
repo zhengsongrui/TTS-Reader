@@ -137,10 +137,6 @@
 					</view>
 					<view class="setting-item">
 						<text class="setting-title">背景图</text>
-						<!-- 添加背景图：从相册选择多张并保存为本地持久文件 -->
-						<view class="expand-item audio-btn" @click="onAddBgImage">
-							<text class="expand-text">添加背景图</text>
-						</view>
 						<!-- 已上传背景图缩略图（右上角删除按钮，删除前二次确认） -->
 						<view class="bg-thumb-row" v-show="chapterBgImages.length > 0">
 							<view class="bg-thumb-item" v-for="(img, i) in chapterBgImages" :key="i">
@@ -208,8 +204,6 @@
 	// 章节背景透明度（0-100）与背景图路径列表
 	const chapterBgAlpha = ref(getChapterBgAlpha())
 	const chapterBgImages = ref<string[]>(getChapterBgImages())
-	// 背景图持久化目录（uni-app x 不认 _doc 虚拟路径，用 USER_DATA_PATH）
-	const BG_IMG_DIR = uni.env.USER_DATA_PATH + '/bg/'
 	// 章节背景预设色板
 	const bgColors = CHAPTER_BG_COLORS
 	// 目录项固定高度（rpx，与样式保持一致）
@@ -390,50 +384,6 @@
 				chapterBgImages.value = arr
 				setChapterBgImages(arr)
 				emit('bgImagesChange', arr)
-			}
-		})
-	}
-
-	// 添加背景图：从相册选择多张，逐个保存为本地持久文件，全部完成后更新列表并写存储、上抛
-	const onAddBgImage = () => {
-		uni.chooseImage({
-			count: 9,
-			sizeType: ['compressed'],
-			sourceType: ['album'],
-			success: (res) => {
-				const tempPaths: string[] = res.tempFilePaths
-				if (tempPaths.length == 0) return
-				const fm = uni.getFileSystemManager()
-				// 目录不存在时先创建（mkdirSync 已存在会抛错，故先 access 检查）
-				try {
-					fm.accessSync(BG_IMG_DIR)
-				} catch (e) {
-					fm.mkdirSync(BG_IMG_DIR, true)
-				}
-				const savedPaths: string[] = []
-				let pending = tempPaths.length
-				for (let i = 0; i < tempPaths.length; i++) {
-					// 保留原扩展名，避免图片类型与后缀不符导致渲染异常
-					const dot = tempPaths[i].lastIndexOf('.')
-					const ext = dot >= 0 ? tempPaths[i].substring(dot) : '.jpg'
-					fm.saveFile({
-						tempFilePath: tempPaths[i],
-						filePath: BG_IMG_DIR + 'bg_' + Date.now() + '_' + i + ext,
-						success: (r: SaveFileSuccessResult) => {
-							savedPaths.push(r.savedFilePath)
-						},
-						complete: () => {
-							pending--
-							if (pending == 0) {
-								const arr = chapterBgImages.value.slice().concat(savedPaths)
-								chapterBgImages.value = arr
-								setChapterBgImages(arr)
-								emit('bgImagesChange', arr)
-								uni.showToast({ title: '已添加 ' + savedPaths.length + ' 张背景图' })
-							}
-						}
-					} as SaveFileOptions)
-				}
 			}
 		})
 	}
